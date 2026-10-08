@@ -1,0 +1,20 @@
+# POKY_BBLAYERS_CONF_VERSION is increased each time build/conf/bblayers.conf
+# changes incompatibly
+POKY_BBLAYERS_CONF_VERSION = "2"
+
+BBPATH = "${TOPDIR}"
+BBFILES ?= ""
+
+# Determine relative path from build folder to top workspace directory
+OEROOT := "##OEROOT##"
+
+BBLAYERS ?= " \
+  ${OEROOT}/poky/meta \
+  ${OEROOT}/poky/meta-poky \
+  ${OEROOT}/poky/meta-yocto-bsp \
+  ${OEROOT}/meta-openembedded/meta-oe \
+  ${OEROOT}/meta-openembedded/meta-python \
+  ${OEROOT}/meta-openembedded/meta-networking \
+  ${OEROOT}/meta-raspberrypi \
+  ${OEROOT}/yocto-stm32-telemetry-bridge/meta-telemetry-bridge \
+  "

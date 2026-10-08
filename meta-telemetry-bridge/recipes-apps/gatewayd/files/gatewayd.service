@@ -1,0 +1,12 @@
+[Unit]
+Description=Heterogeneous Edge Gateway Daemon
+After=network.target
+
+[Service]
+ExecStart=/usr/bin/gatewayd
+Restart=always
+RestartSec=3
+User=root
+
+[Install]
+WantedBy=multi-user.target

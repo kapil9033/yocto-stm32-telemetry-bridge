@@ -1,0 +1,34 @@
+# Target Machine Configuration
+MACHINE ?= "raspberrypi3"
+
+# System Initialization Engine
+VIRTUAL-RUNTIME_init_manager = "systemd"
+DISTRO_FEATURES:append = " systemd"
+DISTRO_FEATURES:backfill_remove = "sysvinit"
+
+# Automatically install gateway daemon service into image
+IMAGE_INSTALL:append = " gatewayd"
+
+# Yocto Parallel Processing Optimization
+BB_NUMBER_THREADS ?= "${@oe.utils.cpu_count()}"
+PARALLEL_MAKE ?= "-j ${@oe.utils.cpu_count()}"
+
+# Shared Directories Configuration
+DL_DIR ?= "${TOPDIR}/../downloads"
+SSTATE_DIR ?= "${TOPDIR}/../sstate-cache"
+TMPDIR = "${TOPDIR}/tmp"
+
+# Build Output Package Management
+PACKAGE_CLASSES ?= "package_rpm"
+
+# Disk Space Monitoring
+BB_DISKMON_DIRS ??= "\
+    STOPSIG,${TMPDIR},1G,100K \
+    STOPSIG,${DL_DIR},1G,100K \
+    STOPSIG,${SSTATE_DIR},1G,100K \
+    STOPSIG,/tmp,100M,1K"
+
+# Image Extra Features (Enable SSH & Extra Space for Debugging)
+EXTRA_IMAGE_FEATURES ?= "debug-tweaks ssh-server-dropbear"
+
+CONF_VERSION = "2"

@@ -1,0 +1,6 @@
+Default template configurations for the Heterogeneous Edge Gateway Project.
+
+To use these templates when setting up a new build directory, run:
+
+    export TEMPLATECONF=yocto-stm32-telemetry-bridge/meta-telemetry-bridge/conf/templates/default
+    source poky/oe-init-build-env Rasp_Build
