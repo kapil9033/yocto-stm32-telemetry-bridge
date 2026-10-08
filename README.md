@@ -82,7 +82,7 @@ The system is intended to run from USB bus power supplied by the host.
 | DHT11 module | Temperature and humidity | Single-wire GPIO | 3.3 V |
 | HC-SR501 PIR module | Motion detection | Digital GPIO output | 5 V |
 | MAX7219 LED matrix | Local status and telemetry display | SPI1 | 5 V |
-| LCD1602 display | Local telemetry and status UI | I2C1 adapter or 4-bit GPIO | 5 V / 3.3 V |
+| LCD1602 display | Local telemetry and status UI | Parallel GPIO, 4-bit mode | 5 V |
 | Push-button switch | Display mode and command input | GPIO / EXTI | 3.3 V |
 | Breadboard and DuPont wires | Prototyping interconnect | N/A | N/A |
 
@@ -144,14 +144,33 @@ signal levels before connecting them to STM32 GPIO.
 | CS | PB6 (CN5 D10) | GPIO output used as chip select. |
 | CLK | PA5 (SPI1_SCK / CN5 D13) | SPI clock. |
 
-#### LCD1602 Display (I2C Adapter)
+#### LCD1602 Display (Native Parallel, 4-Bit Mode)
 
-| Display pin | Connect to | Notes |
+This mapping uses the LCD's D4-D7 data pins; D0-D3 are not connected. The
+chosen STM32 pins are available in the current project pinout and do not
+overlap the listed sensor or MAX7219 connections. Configure them as GPIO
+outputs and initialize the LCD in 4-bit mode in firmware.
+
+| LCD pin | Connect to | Notes |
 | --- | --- | --- |
-| VCC | Supply supported by the display adapter | Check both module supply and I2C logic-level requirements. |
-| GND | Common ground | Connect to NUCLEO ground. |
-| SCL | PB8 (I2C1_SCL) | Shared I2C1 bus with the DS3231. |
-| SDA | PB9 (I2C1_SDA) | Shared I2C1 bus with the DS3231. |
+| VSS | Common ground | Standard HD44780-compatible LCD ground pin. |
+| VDD (sometimes labeled VCC) | +5 V rail | A standard 16-pin LCD has VDD as its supply pin. If your board exposes separate VCC and VDD pins, check its datasheet before wiring both. |
+| V0 / VO | Wiper of a 10 kOhm contrast potentiometer | Connect the potentiometer's two outer terminals to +5 V and GND. Adjust for readable contrast. |
+| RS | PC0 (CN7 pin 38) | Register select GPIO output. |
+| RW | GND | Write-only operation; tie low. |
+| E | PC1 (CN7 pin 36) | Enable GPIO output. |
+| D0-D3 | Not connected | Unused in 4-bit mode. |
+| D4 | PC2 (CN7 pin 35) | LCD data bit 4. |
+| D5 | PC3 (CN7 pin 37) | LCD data bit 5. |
+| D6 | PC4 (CN10 pin 34) | LCD data bit 6. |
+| D7 | PC5 (CN10 pin 6) | LCD data bit 7. |
+| A (LED+) | +5 V through the backlight current-limiting resistor | Some LCD modules include this resistor; check the module documentation. |
+| K (LED-) | GND | Backlight cathode. |
+
+Connect LCD ground, NUCLEO ground, and external-supply ground together. STM32
+GPIO outputs are 3.3 V; check that the LCD accepts 3.3 V logic-high inputs when
+powered from 5 V, and use a level shifter if its datasheet requires one. Do not
+connect the LCD's 5 V supply or contrast voltage to an STM32 GPIO.
 
 #### User Button
 
@@ -170,7 +189,9 @@ signal levels before connecting them to STM32 GPIO.
 the current firmware configures PA5 (ADC1_IN5) for the photocell. PA5 is also
 the MAX7219 clock pin, so update the firmware ADC configuration to PB0 before
 using the MAX7219 and photocell together. The firmware configures DHT11 on
-PA6, the PIR input is PA8, and the onboard button is PC13.
+PA6, the PIR input is PA8, and the onboard button is PC13. The LCD pin
+assignment above is a wiring plan; the current firmware does not yet configure
+these GPIOs or include an LCD driver.
 
 ### STM32F446RE Board Pinout Reference
 
@@ -214,7 +235,7 @@ CN7 (Left Morpho Header)                               CN10 (Right Morpho Header
 +--------------------------------------+    +--------------------------------------+
 |  1: PC10               2: PC11       |    |  1: PC9                2: PC8        |
 |  3: PC12               4: PD2        |    |  3: PB8                4: PC6        |
-|  5: VDD                6: E5V        |    |  5: PB9                6: PC5        |
+|  5: VDD                6: E5V        |    |  5: PB9                6: PC5 [LCD D7]|
 |  7: BOOT0              8: GND        |    |  7: AVDD               8: U5V        |
 |  9: NC                10: NC         |    |  9: GND               10: NC         |
 | 11: NC                12: IOREF      |    | 11: PA5               12: PA12       |
@@ -228,9 +249,9 @@ CN7 (Left Morpho Header)                               CN10 (Right Morpho Header
 | 27: PC15              28: PA0        |    | 27: PB4               28: PB14       |
 | 29: PH0               30: PA1        |    | 29: PB5               30: PB13       |
 | 31: PH1               32: PA4        |    | 31: PB3               32: AGND       |
-| 33: VBAT              34: PB0 [PHOTO]|    | 33: PA10              34: PC4        |
-| 35: PC2               36: PC1         |    | 35: PA2               36: NC         |
-| 37: PC3               38: PC0         |    | 37: PA3               38: NC         |
+| 33: VBAT              34: PB0 [PHOTO]|    | 33: PA10              34: PC4 [LCD D6]|
+| 35: PC2 [LCD D4]      36: PC1 [LCD E] |   | 35: PA2               36: NC         |
+| 37: PC3 [LCD D5]      38: PC0 [LCD RS]|   | 37: PA3               38: NC         |
 +--------------------------------------+    +--------------------------------------+
 ```
 
