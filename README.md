@@ -80,23 +80,186 @@ The system is intended to run from USB bus power supplied by the host.
 | Photoresistor (photocell) | Ambient-light sensor | ADC voltage divider | 3.3 V |
 | DS3231 RTC module | Real-time clock and timestamping | I2C1 | 3.3 V |
 | DHT11 module | Temperature and humidity | Single-wire GPIO | 3.3 V |
+| HC-SR501 PIR module | Motion detection | Digital GPIO output | 5 V |
+| MAX7219 LED matrix | Local status and telemetry display | SPI1 | 5 V |
 | LCD1602 display | Local telemetry and status UI | I2C1 adapter or 4-bit GPIO | 5 V / 3.3 V |
 | Push-button switch | Display mode and command input | GPIO / EXTI | 3.3 V |
 | Breadboard and DuPont wires | Prototyping interconnect | N/A | N/A |
 
-### Pin Interconnects
+### Hardware Connections and Pinouts
 
-| Device | Signal | STM32 pin | Peripheral / function |
-| :--- | :--- | :--- | :--- |
-| ADXL335 | X-Out | `PA0` | `ADC1_IN0` (circular DMA) |
-| ADXL335 | Y-Out | `PA1` | `ADC1_IN1` (circular DMA) |
-| ADXL335 | Z-Out | `PA4` | `ADC1_IN4` (circular DMA) |
-| Photoresistor | Signal | `PB0` | `ADC1_IN8` (divider voltage read) |
-| DS3231 RTC | SCL / SDA | `PB8` / `PB9` | `I2C1_SCL` / `I2C1_SDA` |
-| LCD1602 | SCL / SDA | `PB8` / `PB9` | Shared I2C1 bus |
-| DHT11 | Data | `PA8` | GPIO bit-bang input/output |
-| Push button | Signal | `PC13` or `PA10` | EXTI, falling edge |
-| Raspberry Pi gateway | USB cable | Mini-USB (ST-LINK) | USB OTG FS / virtual COM port |
+The STM32F446RE uses 3.3 V GPIO logic. Use an external supply for 5 V
+peripherals and connect its ground to a NUCLEO ground pin. Check peripheral
+signal levels before connecting them to STM32 GPIO.
+
+#### ADXL335 Accelerometer
+
+| Sensor pin | Connect to | Notes |
+| --- | --- | --- |
+| VCC | 3.3 V rail | Use the sensor module's supported supply voltage. |
+| GND | Common ground | Connect to NUCLEO ground. |
+| X-OUT | PA0 (ADC1_IN0) | ADC1 circular DMA channel 1. |
+| Y-OUT | PA1 (ADC1_IN1) | ADC1 circular DMA channel 2. |
+| Z-OUT | PA4 (ADC1_IN4) | ADC1 circular DMA channel 3. |
+
+#### Photoresistor (Photocell)
+
+| Sensor connection | Connect to | Notes |
+| --- | --- | --- |
+| Voltage-divider output | PB0 (ADC1_IN8 / CN8 A3) | Connect the photocell in a voltage divider between 3.3 V and GND. Keep the ADC input within 0–3.3 V. |
+| Divider supply / ground | 3.3 V / common ground | Connect ground to the NUCLEO ground. |
+
+#### DS3231 RTC Module
+
+| Module pin | Connect to | Notes |
+| --- | --- | --- |
+| VCC | 3.3 V rail | Confirm the module supports 3.3 V operation. |
+| GND | Common ground | Connect to NUCLEO ground. |
+| SCL | PB8 (I2C1_SCL / CN5 SCL, D15) | I2C1 bus. |
+| SDA | PB9 (I2C1_SDA / CN5 SDA, D14) | I2C1 bus. |
+
+#### DHT11 Temperature and Humidity Sensor
+
+| Sensor pin | Connect to | Notes |
+| --- | --- | --- |
+| VCC | 3.3 V rail | Use 3.3 V logic. |
+| GND | Common ground | Connect to NUCLEO ground. |
+| DATA | PA6 (CN10 pin 13) | Single-wire GPIO; use the module's pull-up or a suitable pull-up to 3.3 V. |
+
+#### HC-SR501 PIR Motion Sensor
+
+| Sensor pin | Connect to | Board header position / notes |
+| --- | --- | --- |
+| VCC | External 5 V rail | Allow the module to stabilize after power-up. |
+| GND | Common ground | Connect to the NUCLEO and external-supply ground. |
+| OUT | PA8 | CN9 D7 / pin 8 or CN10 pin 23. Verify OUT is 3.3 V-safe; use level shifting if required. |
+
+#### MAX7219 LED Matrix
+
+| Matrix pin | Connect to | Notes |
+| --- | --- | --- |
+| VCC | External 5 V supply | Do not power the matrix from the NUCLEO 3.3 V rail. |
+| GND | Common ground | Connect to NUCLEO and external-supply ground. |
+| DIN | PA7 (SPI1_MOSI / CN5 D11) | SPI data output. |
+| CS | PB6 (CN5 D10) | GPIO output used as chip select. |
+| CLK | PA5 (SPI1_SCK / CN5 D13) | SPI clock. |
+
+#### LCD1602 Display (I2C Adapter)
+
+| Display pin | Connect to | Notes |
+| --- | --- | --- |
+| VCC | Supply supported by the display adapter | Check both module supply and I2C logic-level requirements. |
+| GND | Common ground | Connect to NUCLEO ground. |
+| SCL | PB8 (I2C1_SCL) | Shared I2C1 bus with the DS3231. |
+| SDA | PB9 (I2C1_SDA) | Shared I2C1 bus with the DS3231. |
+
+#### User Button
+
+| Button connection | Connect to | Notes |
+| --- | --- | --- |
+| Onboard NUCLEO user button | PC13 | This is the button input configured by the current firmware; active-low. |
+| External button, optional | GPIO input to GND | Only use a pin configured by the firmware and its matching pull-up. |
+
+#### Raspberry Pi Gateway Serial Connection
+
+| Connection | Connect to | Notes |
+| --- | --- | --- |
+| NUCLEO USB connector | Raspberry Pi USB port | ST-LINK USB virtual COM port; Linux typically exposes `/dev/ttyACM0`. |
+
+**Pin-use note:** The documented photocell connection is PB0 (ADC1_IN8), but
+the current firmware configures PA5 (ADC1_IN5) for the photocell. PA5 is also
+the MAX7219 clock pin, so update the firmware ADC configuration to PB0 before
+using the MAX7219 and photocell together. The firmware configures DHT11 on
+PA6, the PIR input is PA8, and the onboard button is PC13.
+
+### STM32F446RE Board Pinout Reference
+
+The numbers below identify physical header positions on the NUCLEO-F446RE.
+CN7 and CN10 Morpho headers are shown side by side.
+
+#### CN5 Digital Header
+
+| Pin | Signal | STM32 pin / peripheral |
+| ---: | --- | --- |
+| 1 | D8 | PA9 |
+| 2 | D9 | PC7 (TIM3_CH2 / TIM8_CH2) |
+| 3 | CS / D10 | PB6 (SPI1 chip select) |
+| 4 | MOSI / D11 | PA7 (SPI1_MOSI / PWM) |
+| 5 | MISO / D12 | PA6 (SPI1_MISO) |
+| 6 | SCK / D13 | PA5 (SPI1_SCK / onboard LD2) |
+| 7 | GND | Ground |
+| 8 | AVDD | Analog VDD reference |
+| 9 | SDA / D14 | PB9 (I2C1_SDA) |
+| 10 | SCL / D15 | PB8 (I2C1_SCL) |
+
+#### CN6 Power Header
+
+| Pin | Signal | Description |
+| ---: | --- | --- |
+| 1 | NC | Not connected |
+| 2 | IOREF | 3.3 V reference |
+| 3 | RESET | NRST MCU reset |
+| 4 | +3.3 V | 3.3 V power rail |
+| 5 | +5 V | 5 V power rail |
+| 6 | GND | Ground |
+| 7 | GND | Ground |
+| 8 | VIN | External input voltage (7–12 V) |
+
+#### CN7 and CN10 Morpho Headers
+
+The rows pair adjacent pin numbers on each connector.
+
+```text
+CN7 (Left Morpho Header)                               CN10 (Right Morpho Header)
++--------------------------------------+    +--------------------------------------+
+|  1: PC10               2: PC11       |    |  1: PC9                2: PC8        |
+|  3: PC12               4: PD2        |    |  3: PB8                4: PC6        |
+|  5: VDD                6: E5V        |    |  5: PB9                6: PC5        |
+|  7: BOOT0              8: GND        |    |  7: AVDD               8: U5V        |
+|  9: NC                10: NC         |    |  9: GND               10: NC         |
+| 11: NC                12: IOREF      |    | 11: PA5               12: PA12       |
+| 13: PA13*             14: NRST       |    | 13: PA6 [DHT11 DATA]   14: PA11       |
+| 15: PA14*             16: +3V3       |    | 15: PA7 [MAX DIN]      16: PB12       |
+| 17: PA15              18: +5V        |    | 17: PB6 [MAX CS]       18: PB11       |
+| 19: GND               20: GND        |    | 19: PC7               20: GND        |
+| 21: PB7               22: GND        |    | 21: PA9               22: PB2        |
+| 23: PC13 [USER]       24: VIN        |    | 23: PA8 [PIR OUT]      24: PB1        |
+| 25: PC14              26: NC         |    | 25: PB10              26: PB15       |
+| 27: PC15              28: PA0        |    | 27: PB4               28: PB14       |
+| 29: PH0               30: PA1        |    | 29: PB5               30: PB13       |
+| 31: PH1               32: PA4        |    | 31: PB3               32: AGND       |
+| 33: VBAT              34: PB0 [PHOTO]|    | 33: PA10              34: PC4        |
+| 35: PC2               36: PC1         |    | 35: PA2               36: NC         |
+| 37: PC3               38: PC0         |    | 37: PA3               38: NC         |
++--------------------------------------+    +--------------------------------------+
+```
+
+`*` PA13 and PA14 are SWD debug pins. Header positions shown for the PIR are
+CN10 pin 23 and CN9 pin 8 (PA8).
+
+#### CN8 Analog Header
+
+| Pin | Signal | STM32 pin / peripheral |
+| ---: | --- | --- |
+| 1 | A0 | PA0 (ADC1_IN0) |
+| 2 | A1 | PA1 (ADC1_IN1) |
+| 3 | A2 | PA4 (ADC1_IN4) |
+| 4 | A3 | PB0 (ADC1_IN8) |
+| 5 | A4 | PC1 (ADC1_IN11) |
+| 6 | A5 | PC0 (ADC1_IN10) |
+
+#### CN9 Digital Header
+
+| Pin | Signal | STM32 pin / peripheral |
+| ---: | --- | --- |
+| 1 | D0 (RX) | PA3 (USART2_RX / ST-LINK VCP) |
+| 2 | D1 (TX) | PA2 (USART2_TX / ST-LINK VCP) |
+| 3 | D2 | PA10 |
+| 4 | D3 | PB3 (TIM2_CH2) |
+| 5 | D4 | PB5 |
+| 6 | D5 | PB4 (TIM3_CH1) |
+| 7 | D6 | PB10 (TIM2_CH3) |
+| 8 | D7 | PA8 |
 
 ## Communication Protocol
 
