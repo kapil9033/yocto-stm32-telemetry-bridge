@@ -4,6 +4,8 @@ static I2C_HandleTypeDef *p_hi2c = NULL;
 static SemaphoreHandle_t xI2cMutex = NULL;
 static SemaphoreHandle_t xDht11Mutex = NULL;
 
+#define DHT11_EDGE_TIMEOUT_US 100U
+
 /* Helper: BCD to Decimal Conversion */
 static uint8_t BCD2DEC(uint8_t val) {
     return (uint8_t)(((val >> 4) * 10) + (val & 0x0F));
@@ -15,7 +17,11 @@ static uint8_t BCD2DEC(uint8_t val) {
 void Sensors_Init(I2C_HandleTypeDef *hi2c)
 {
     p_hi2c = hi2c;
-    
+
+    CoreDebug->DEMCR |= CoreDebug_DEMCR_TRCENA_Msk;
+    DWT->CYCCNT = 0U;
+    DWT->CTRL |= DWT_CTRL_CYCCNTENA_Msk;
+
     if (xI2cMutex == NULL) {
         xI2cMutex = xSemaphoreCreateMutex();
     }
@@ -61,10 +67,24 @@ uint8_t DS3231_Read_Timestamp(uint32_t *epoch_sec)
 
 /* Microsecond Delay Helper for Single-Wire Protocol */
 static void delay_us(uint32_t us) {
-    uint32_t ticks = us * (SystemCoreClock / 1000000) / 5;
-    while (ticks--) {
-        __NOP();
+    uint32_t cycles = (SystemCoreClock / 1000000U) * us;
+    uint32_t start = DWT->CYCCNT;
+    while ((DWT->CYCCNT - start) < cycles) {
     }
+}
+
+static uint8_t DHT11_WaitForLevel(GPIO_PinState level, uint32_t timeout_us)
+{
+    uint32_t timeout_cycles = (SystemCoreClock / 1000000U) * timeout_us;
+    uint32_t start = DWT->CYCCNT;
+
+    while (HAL_GPIO_ReadPin(DHT11_PORT, DHT11_PIN) != level) {
+        if ((DWT->CYCCNT - start) >= timeout_cycles) {
+            return 0U;
+        }
+    }
+
+    return 1U;
 }
 
 static void DHT11_Set_Pin_Output(void) {
@@ -88,6 +108,10 @@ static void DHT11_Set_Pin_Input(void) {
   */
 uint8_t DHT11_Read_Data(uint8_t *temp, uint8_t *humidity)
 {
+    if (temp == NULL || humidity == NULL || xDht11Mutex == NULL) {
+        return 0U;
+    }
+
     uint8_t data[5] = {0};
     uint8_t success = 0;
 
@@ -103,28 +127,38 @@ uint8_t DHT11_Read_Data(uint8_t *temp, uint8_t *humidity)
         HAL_GPIO_WritePin(DHT11_PORT, DHT11_PIN, GPIO_PIN_SET);
         delay_us(30);
 
-        /* 2. Switch to Input & Wait for Sensor Response */
+        /* 2. Switch to input and bound every response-edge wait. */
         DHT11_Set_Pin_Input();
 
-        if (HAL_GPIO_ReadPin(DHT11_PORT, DHT11_PIN) == GPIO_PIN_RESET) {
-            while (HAL_GPIO_ReadPin(DHT11_PORT, DHT11_PIN) == GPIO_PIN_RESET);
-            while (HAL_GPIO_ReadPin(DHT11_PORT, DHT11_PIN) == GPIO_PIN_SET);
+        if (DHT11_WaitForLevel(GPIO_PIN_RESET, DHT11_EDGE_TIMEOUT_US) &&
+            DHT11_WaitForLevel(GPIO_PIN_SET, DHT11_EDGE_TIMEOUT_US) &&
+            DHT11_WaitForLevel(GPIO_PIN_RESET, DHT11_EDGE_TIMEOUT_US)) {
+            /* 3. Read 40 bits (5 bytes), timing out on missing edges. */
+            success = 1U;
+            for (uint8_t i = 0U; i < 40U; ++i) {
+                if (!DHT11_WaitForLevel(GPIO_PIN_SET, DHT11_EDGE_TIMEOUT_US)) {
+                    success = 0U;
+                    break;
+                }
 
-            /* 3. Read 40 Bits (5 Bytes) */
-            for (int i = 0; i < 40; i++) {
-                while (HAL_GPIO_ReadPin(DHT11_PORT, DHT11_PIN) == GPIO_PIN_RESET);
-                delay_us(40);
+                delay_us(40U);
                 if (HAL_GPIO_ReadPin(DHT11_PORT, DHT11_PIN) == GPIO_PIN_SET) {
-                    data[i / 8] |= (1 << (7 - (i % 8)));
-                    while (HAL_GPIO_ReadPin(DHT11_PORT, DHT11_PIN) == GPIO_PIN_SET);
+                    data[i / 8U] |= (uint8_t)(1U << (7U - (i % 8U)));
+                }
+
+                if (!DHT11_WaitForLevel(GPIO_PIN_RESET, DHT11_EDGE_TIMEOUT_US)) {
+                    success = 0U;
+                    break;
                 }
             }
 
-            /* 4. Validate Checksum */
-            if (data[4] == ((data[0] + data[1] + data[2] + data[3]) & 0xFF)) {
+            /* 4. Validate checksum */
+            if (success &&
+                data[4] == (uint8_t)(data[0] + data[1] + data[2] + data[3])) {
                 *humidity = data[0];
                 *temp = data[2];
-                success = 1;
+            } else {
+                success = 0U;
             }
         }
 

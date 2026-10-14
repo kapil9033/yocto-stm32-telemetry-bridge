@@ -15,14 +15,6 @@ struct TelemetryPayload {
     uint8_t  button_state;
 };
 
-struct TelemetryFrame {
-    uint8_t          sof;
-    uint8_t          msg_type;
-    uint8_t          payload_len;
-    TelemetryPayload payload;
-    uint16_t         crc16;
-    uint8_t          eof;
-};
 #pragma pack(pop)
 
 #endif // TELEMETRY_H

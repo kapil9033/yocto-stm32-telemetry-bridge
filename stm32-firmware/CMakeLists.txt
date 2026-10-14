@@ -90,7 +90,9 @@ set(FREERTOS_SOURCES
 
 add_executable(${PROJECT_NAME}.elf
     Core/Src/main.c
+    Core/Src/lcd1602.c
     Core/Src/sensors_driver.c
+    Core/Src/telemetry_protocol.c
     Core/Src/telemetry_task.c
     Core/Src/stm32f4xx_hal_msp.c
     ${HAL_SOURCES}

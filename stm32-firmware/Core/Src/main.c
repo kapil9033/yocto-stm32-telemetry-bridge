@@ -9,6 +9,7 @@
 #include "FreeRTOS.h"
 #include "task.h"
 #include "semphr.h"
+#include "lcd1602.h"
 #include "telemetry_task.h"
 #include "sensors_driver.h"
 
@@ -49,6 +50,17 @@ int main(void)
   MX_ADC1_Init();
   MX_I2C1_Init();
   MX_USART2_UART_Init();
+
+  static const uint8_t uart_startup_marker[] = "STM32 UART READY\r\n";
+  if (HAL_UART_Transmit(&huart2, (uint8_t *)uart_startup_marker,
+                        sizeof(uart_startup_marker) - 1U, 100U) != HAL_OK)
+  {
+    Error_Handler();
+  }
+
+  LCD1602_Init();
+  LCD1602_WriteLine(0U, "Telemetry Bridge");
+  LCD1602_WriteLine(1U, "Starting...");
 
   /* 1. Create FreeRTOS Binary Semaphore for ADC DMA Completion */
   xAdcDmaSemaphore = xSemaphoreCreateBinary();
@@ -250,6 +262,15 @@ static void MX_GPIO_Init(void)
   GPIO_InitStruct.Pin = GPIO_PIN_13;
   GPIO_InitStruct.Mode = GPIO_MODE_INPUT;
   GPIO_InitStruct.Pull = GPIO_PULLUP;
+  HAL_GPIO_Init(GPIOC, &GPIO_InitStruct);
+
+  /* Configure LCD1602 pins: RS=PC0, E=PC1, D4-D7=PC2-PC5 */
+  GPIO_InitStruct.Pin = GPIO_PIN_0 | GPIO_PIN_1 | GPIO_PIN_2
+                      | GPIO_PIN_3 | GPIO_PIN_4 | GPIO_PIN_5;
+  GPIO_InitStruct.Mode = GPIO_MODE_OUTPUT_PP;
+  GPIO_InitStruct.Pull = GPIO_NOPULL;
+  GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_LOW;
+  HAL_GPIO_WritePin(GPIOC, GPIO_InitStruct.Pin, GPIO_PIN_RESET);
   HAL_GPIO_Init(GPIOC, &GPIO_InitStruct);
 }
 

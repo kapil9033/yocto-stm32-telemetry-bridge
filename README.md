@@ -5,6 +5,32 @@ FreeRTOS to a Raspberry Pi Linux gateway built with Yocto. The system acquires
 multi-sensor telemetry, displays local status, and communicates framed data
 between the target and host.
 
+## Initial Project Scope
+
+The project was initially conceived as a full-stack heterogeneous system:
+
+- **Target platform:** Raspberry Pi 3 Model B running a custom Yocto Linux image,
+  paired with an STM32F446RE running FreeRTOS.
+- **Host-to-target link:** USB CDC-ACM or UART for telemetry and commands.
+- **Network and root filesystem:** Ethernet, including an NFS-root development
+  environment for the Raspberry Pi.
+- **Software stack:** Yocto/BitBake, a C++ Linux user-space daemon, FreeRTOS,
+  and Linux device interfaces.
+
+The project goals are to:
+
+1. Build the Yocto image and required software on the development host, then
+   flash/deploy that image to the Raspberry Pi using the existing setup. The Pi
+   is the runtime target, not the build machine.
+2. Design a reliable binary protocol between Linux and the STM32, with framing,
+   COBS byte stuffing, and CRC16 verification.
+3. Observe system and sensor telemetry while running the Raspberry Pi in an
+   Ethernet/NFS-root setup.
+
+The current protocol implementation and its frame layout are documented in
+[Communication Protocol](#communication-protocol). Frames use COBS encoding,
+a `0x00` delimiter, and CRC-16/MODBUS.
+
 ## Project Overview
 
 Industrial edge devices divide deterministic, real-time work—such as sensor
@@ -189,9 +215,12 @@ connect the LCD's 5 V supply or contrast voltage to an STM32 GPIO.
 the current firmware configures PA5 (ADC1_IN5) for the photocell. PA5 is also
 the MAX7219 clock pin, so update the firmware ADC configuration to PB0 before
 using the MAX7219 and photocell together. The firmware configures DHT11 on
-PA6, the PIR input is PA8, and the onboard button is PC13. The LCD pin
-assignment above is a wiring plan; the current firmware does not yet configure
-these GPIOs or include an LCD driver.
+PA6, the PIR input is PA8, and the onboard button is PC13. LCD pins are
+configured in firmware; the LCD is initialized and updated when connected.
+
+The DHT11 driver bounds its signal-edge waits. If the sensor read fails,
+telemetry still continues and reports temperature `-128` and humidity `255`
+as error sentinels; these values are not sensor measurements.
 
 ### STM32F446RE Board Pinout Reference
 
@@ -285,20 +314,23 @@ CN10 pin 23 and CN9 pin 8 (PA8).
 ## Communication Protocol
 
 Telemetry is sent over the serial interface (shown as `/dev/ttyACM0` on the
-gateway). Frames use the following layout:
+gateway). Each frame is COBS-encoded and terminated by a `0x00` delimiter. After
+COBS decoding, the frame has this layout:
 
 | Byte offset | Field | Type | Description |
 | :--- | :--- | :--- | :--- |
-| `0x00` | Header / SOF | `uint8_t` | Frame start identifier, `0xAA` |
-| `0x01` | Message type | `uint8_t` | `0x01` telemetry, `0x02` alarm, or `0x03` command |
-| `0x02` | Payload length | `uint8_t` | Payload length, N bytes |
-| `0x03` to `N+2` | Payload | `uint8_t[]` | Sensor structure or configuration command |
-| `N+3` to `N+4` | CRC16 | `uint16_t` | Modbus/CCITT checksum over header, type, length, and payload |
-| `N+5` | Tail / EOF | `uint8_t` | Frame end identifier, `0x55` |
+| `0x00` | Message type | `uint8_t` | `0x01` telemetry, `0x02` alarm, or `0x03` command |
+| `0x01` | Payload length | `uint8_t` | Payload length, N bytes |
+| `0x02` to `N+1` | Payload | `uint8_t[]` | Sensor structure or configuration command |
+| `N+2` to `N+3` | CRC16 | `uint16_t` | CRC-16/MODBUS over message type, length, and payload; low byte first |
+
+The CRC uses initial value `0xFFFF` and reflected polynomial `0xA001`. Numeric
+fields in the payload are transmitted little-endian. COBS removes zero bytes
+from the encoded frame body, so `0x00` safely marks the end of each frame.
 
 ### Telemetry Payload
 
-For message type `0x01`, the documented telemetry payload is 15 bytes:
+For message type `0x01`, the telemetry payload is 15 bytes:
 
 | Payload offset | Field | Type | Unit / description |
 | :--- | :--- | :--- | :--- |
@@ -326,8 +358,9 @@ typedef struct __attribute__((packed)) {
 } TelemetryPayload_t;
 ```
 
-The complete frame is 21 bytes: 1-byte header, 1-byte message type, 1-byte
-payload length, 15-byte payload, 2-byte CRC16, and 1-byte tail.
+The decoded frame is 19 bytes: 1-byte message type, 1-byte payload length,
+15-byte payload, and 2-byte CRC16. COBS encoding and the terminating delimiter
+add framing overhead.
 
 ## Software Components
 
@@ -369,6 +402,66 @@ cmake --build stm32-firmware/build
 ```
 
 The ELF, BIN, and HEX firmware images are written to `stm32-firmware/build`.
+
+### Flashing the STM32 from the Raspberry Pi
+
+In this setup, the NUCLEO-F446RE ST-LINK USB connector is attached to the
+Raspberry Pi. Build the firmware on the development host, then copy the BIN
+image into the exported NFS root:
+
+```sh
+# Run on the development host from the repository root
+cmake --build stm32-firmware/build
+sudo cp stm32-firmware/build/stm32f446_freertos_firmware.bin \
+  /srv/nfs/rpi-rootfs/home/
+```
+
+With the Pi booted from that NFS root, run OpenOCD as `root` on the Pi. The
+binary image is programmed at the STM32F446RE flash base address
+`0x08000000`:
+
+```sh
+openocd \
+  -s /usr/share/openocd/scripts \
+  -f interface/stlink.cfg \
+  -f target/stm32f4x.cfg \
+  -c "program /home/stm32f446_freertos_firmware.bin 0x08000000 verify reset exit"
+```
+
+Successful output includes `** Programming Finished **`, `** Verified OK **`,
+and `** Resetting Target **`. The `_write is not implemented` linker warning
+can appear because the firmware does not provide a C library `_write`
+syscall; it does not indicate a flash failure.
+
+### Checking STM32 UART Output on the Raspberry Pi
+
+The current firmware configures USART2 for 115200 baud, 8 data bits, no parity,
+and one stop bit (8N1). The NUCLEO ST-LINK virtual COM port should appear on
+the Pi as `/dev/ttyACM0`. As `root` on the Pi:
+
+```sh
+stty -F /dev/ttyACM0 115200 raw -echo
+dd if=/dev/ttyACM0 bs=1 count=100 2>/dev/null | hexdump -C
+```
+
+Start the capture first, then press the STM32 RESET button once. The expected
+startup message is `STM32 UART READY`, followed by binary COBS telemetry frames
+with `00` delimiters. `dd` waits until it has read 100 bytes; press Ctrl+C to
+stop early. Keep this as the only process reading `/dev/ttyACM0` during the
+test.
+
+Useful Raspberry Pi checks:
+
+```sh
+ls -l /dev/ttyACM0
+dmesg | grep -E 'ttyACM|cdc_acm'
+systemctl status gatewayd --no-pager
+journalctl -u gatewayd -b --no-pager -n 50
+```
+
+The service and journal commands apply to images that include `gatewayd` and
+systemd. The serial device appearing confirms USB enumeration only; valid COBS
+frames must still be captured and decoded to confirm end-to-end telemetry.
 
 ## Implementation Notes
 

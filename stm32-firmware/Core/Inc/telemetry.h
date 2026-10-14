@@ -3,8 +3,6 @@
 
 #include <stdint.h>
 
-#define FRAME_SOF      0xAA
-#define FRAME_EOF      0x55
 #define MSG_TELEMETRY  0x01
 #define MSG_ALARM      0x02
 #define MSG_COMMAND    0x03
@@ -19,15 +17,6 @@ typedef struct __attribute__((packed)) {
     uint8_t  humidity_pct;   // DHT11 Relative Humidity (%)
     uint8_t  button_state;   // EXTI Push Button Toggle Flag
 } TelemetryPayload_t;
-
-typedef struct __attribute__((packed)) {
-    uint8_t  sof;
-    uint8_t  msg_type;
-    uint8_t  payload_len;
-    TelemetryPayload_t payload;
-    uint16_t crc16;
-    uint8_t  eof;
-} TelemetryFrame_t;
 
 uint16_t calculate_crc16(const uint8_t *data, uint16_t length);
 

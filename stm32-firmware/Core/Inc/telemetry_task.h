@@ -6,14 +6,11 @@
 #include "task.h"
 #include "semphr.h"
 
-/* Protocol Frame Marker Definitions */
-#define FRAME_SOF         0xAA
-#define FRAME_EOF         0x55
 #define MSG_TYPE_TELEMETRY 0x01
 
 #define ADC_CHANNELS_NUM  4
 
-/* Telemetry Binary Payload (Packed, 16 Bytes Total) */
+/* Telemetry binary payload (packed, 15 bytes total). */
 typedef struct __attribute__((packed)) {
     uint32_t timestamp_sec;   /* RTC/System Uptime Seconds */
     int16_t  accel_x_mg;      /* ADXL335 X-Axis Acceleration */
@@ -27,6 +24,5 @@ typedef struct __attribute__((packed)) {
 
 /* Function Declarations */
 void StartTelemetryTask(void *argument);
-uint16_t Calculate_CRC16(const uint8_t *data, uint16_t length);
 
 #endif /* TELEMETRY_TASK_H */
