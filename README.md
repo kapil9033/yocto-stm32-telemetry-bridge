@@ -1,9 +1,27 @@
 # Heterogeneous Industrial Edge Gateway
 
+## Yocto Linux Gateway and STM32 FreeRTOS Telemetry Bridge
+
 An embedded system connecting a real-time STM32 microcontroller running
 FreeRTOS to a Raspberry Pi Linux gateway built with Yocto. The system acquires
 multi-sensor telemetry, displays local status, and communicates framed data
 between the target and host.
+
+## Table of Contents
+
+- [Initial Project Scope](#initial-project-scope)
+- [Project Overview](#project-overview)
+- [System Architecture](#system-architecture)
+  - [MCU Task Structure](#mcu-task-structure)
+- [Hardware](#hardware)
+  - [Bill of Materials](#bill-of-materials)
+  - [Hardware Connections and Pinouts](#hardware-connections-and-pinouts)
+  - [STM32F446RE Board Pinout Reference](#stm32f446re-board-pinout-reference)
+- [Communication Protocol](#communication-protocol)
+  - [Telemetry Payload](#telemetry-payload)
+- [Software Components](#software-components)
+- [Building the STM32 Firmware](#building-the-stm32-firmware)
+- [Implementation Notes](#implementation-notes)
 
 ## Initial Project Scope
 
@@ -72,7 +90,7 @@ This project brings those roles together:
                  ADC1 + DMA    I2C1      GPIO      EXTI
                       v         v         v         v
                  ADXL335     DS3231     DHT11    Button
-                 Photocell   LCD1602
+                            LCD1602
 ```
 
 ### MCU Task Structure
@@ -82,7 +100,7 @@ communication:
 
 | Task | Priority | Period / Trigger | Responsibility |
 | :--- | :--- | :--- | :--- |
-| `Task_AnalogDMA` | High | 50 ms | Runs four-channel ADC scans into a circular DMA buffer; calculates filtered acceleration and ambient-light values. |
+| `Task_AnalogDMA` | High | 50 ms | Runs ADC scans into a circular DMA buffer and calculates filtered acceleration values. |
 | `Task_DigitalSens` | Medium | 500 ms | Reads the DS3231 over mutex-protected I2C and samples DHT11 temperature and humidity. |
 | `Task_DisplayUI` | Low | 200 ms | Formats telemetry for the LCD and switches pages based on button input. |
 | `Task_CommParser` | High | Asynchronous / event-driven | Packs telemetry into framed binary packets with CRC16 and transmits it to the gateway. |
@@ -103,7 +121,6 @@ The system is intended to run from USB bus power supplied by the host.
 | Raspberry Pi 3 Model B (Rev 1.2) | Embedded Linux host gateway | Ethernet / NFS boot | USB 5 V |
 | NUCLEO-F446RE (STM32F446RE) | Real-time microcontroller node | USB CDC-ACM / UART | USB 5 V (ST-LINK) |
 | ADXL335 module | Three-axis analog accelerometer | Three ADC channels | 3.3 V |
-| Photoresistor (photocell) | Ambient-light sensor | ADC voltage divider | 3.3 V |
 | DS3231 RTC module | Real-time clock and timestamping | I2C1 | 3.3 V |
 | DHT11 module | Temperature and humidity | Single-wire GPIO | 3.3 V |
 | HC-SR501 PIR module | Motion detection | Digital GPIO output | 5 V |
@@ -127,13 +144,6 @@ signal levels before connecting them to STM32 GPIO.
 | X-OUT | PA0 (ADC1_IN0) | ADC1 circular DMA channel 1. |
 | Y-OUT | PA1 (ADC1_IN1) | ADC1 circular DMA channel 2. |
 | Z-OUT | PA4 (ADC1_IN4) | ADC1 circular DMA channel 3. |
-
-#### Photoresistor (Photocell)
-
-| Sensor connection | Connect to | Notes |
-| --- | --- | --- |
-| Voltage-divider output | PB0 (ADC1_IN8 / CN8 A3) | Connect the photocell in a voltage divider between 3.3 V and GND. Keep the ADC input within 0–3.3 V. |
-| Divider supply / ground | 3.3 V / common ground | Connect ground to the NUCLEO ground. |
 
 #### DS3231 RTC Module
 
@@ -211,12 +221,9 @@ connect the LCD's 5 V supply or contrast voltage to an STM32 GPIO.
 | --- | --- | --- |
 | NUCLEO USB connector | Raspberry Pi USB port | ST-LINK USB virtual COM port; Linux typically exposes `/dev/ttyACM0`. |
 
-**Pin-use note:** The documented photocell connection is PB0 (ADC1_IN8), but
-the current firmware configures PA5 (ADC1_IN5) for the photocell. PA5 is also
-the MAX7219 clock pin, so update the firmware ADC configuration to PB0 before
-using the MAX7219 and photocell together. The firmware configures DHT11 on
-PA6, the PIR input is PA8, and the onboard button is PC13. LCD pins are
-configured in firmware; the LCD is initialized and updated when connected.
+**Pin-use note:** The firmware configures DHT11 on PA6, the PIR input is PA8,
+and the onboard button is PC13. LCD pins are configured in firmware; the LCD
+is initialized and updated when connected.
 
 The DHT11 driver bounds its signal-edge waits. If the sensor read fails,
 telemetry still continues and reports temperature `-128` and humidity `255`
@@ -278,7 +285,7 @@ CN7 (Left Morpho Header)                               CN10 (Right Morpho Header
 | 27: PC15              28: PA0        |    | 27: PB4               28: PB14       |
 | 29: PH0               30: PA1        |    | 29: PB5               30: PB13       |
 | 31: PH1               32: PA4        |    | 31: PB3               32: AGND       |
-| 33: VBAT              34: PB0 [PHOTO]|    | 33: PA10              34: PC4 [LCD D6]|
+| 33: VBAT              34: PB0         |    | 33: PA10              34: PC4 [LCD D6]|
 | 35: PC2 [LCD D4]      36: PC1 [LCD E] |   | 35: PA2               36: NC         |
 | 37: PC3 [LCD D5]      38: PC0 [LCD RS]|   | 37: PA3               38: NC         |
 +--------------------------------------+    +--------------------------------------+
@@ -338,7 +345,7 @@ For message type `0x01`, the telemetry payload is 15 bytes:
 | `0x04` to `0x05` | `accel_x_mg` | `int16_t` | X-axis acceleration in milli-g |
 | `0x06` to `0x07` | `accel_y_mg` | `int16_t` | Y-axis acceleration in milli-g |
 | `0x08` to `0x09` | `accel_z_mg` | `int16_t` | Z-axis acceleration in milli-g |
-| `0x0A` to `0x0B` | `light_lux_raw` | `uint16_t` | Photoresistor ADC value (0–4095) |
+| `0x0A` to `0x0B` | `light_lux_raw` | `uint16_t` | Raw ADC input value (0–4095) |
 | `0x0C` | `temp_celsius` | `int8_t` | DHT11 temperature in degrees Celsius |
 | `0x0D` | `humidity_pct` | `uint8_t` | DHT11 relative humidity in percent |
 | `0x0E` | `button_state` | `uint8_t` | EXTI button state (0 or 1) |
