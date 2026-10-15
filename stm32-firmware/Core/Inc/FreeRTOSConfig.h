@@ -56,7 +56,7 @@
 #define INCLUDE_vTaskDelayUntil                     1
 #define INCLUDE_vTaskDelete                         0
 #define INCLUDE_vTaskSuspend                        0
-#define INCLUDE_xTaskGetSchedulerState              0
+#define INCLUDE_xTaskGetSchedulerState              1
 #define INCLUDE_xTaskGetCurrentTaskHandle           0
 #define INCLUDE_uxTaskGetStackHighWaterMark         0
 #define INCLUDE_xTaskGetIdleTaskHandle              0
@@ -65,6 +65,6 @@
 
 #define vPortSVCHandler       SVC_Handler
 #define xPortPendSVHandler    PendSV_Handler
-#define xPortSysTickHandler   SysTick_Handler
+#define xPortSysTickHandler   FreeRTOS_SysTick_Handler
 
 #endif

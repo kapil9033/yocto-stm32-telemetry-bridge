@@ -476,6 +476,10 @@ frames must still be captured and decoded to confirm end-to-end telemetry.
   concurrent access to the shared I2C bus.
 - **DHT11 timing protection:** `DHT11_Read_Data()` uses a FreeRTOS critical
   section to prevent scheduler preemption from disrupting single-wire timing.
+- **Shared system tick:** The startup `SysTick_Handler` advances the STM32 HAL
+  tick before the FreeRTOS scheduler starts, then forwards ticks to FreeRTOS
+  after scheduler initialization. This avoids calling the kernel tick handler
+  while its task lists are not initialized.
 
 
 

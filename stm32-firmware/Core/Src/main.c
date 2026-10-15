@@ -33,6 +33,16 @@ static void MX_DMA_Init(void);
 static void MX_ADC1_Init(void);
 static void MX_I2C1_Init(void);
 static void MX_USART2_UART_Init(void);
+void FreeRTOS_SysTick_Handler(void);
+
+void SysTick_Handler(void)
+{
+  HAL_IncTick();
+  if (xTaskGetSchedulerState() != taskSCHEDULER_NOT_STARTED)
+  {
+    FreeRTOS_SysTick_Handler();
+  }
+}
 
 /**
   * @brief  The application entry point.
