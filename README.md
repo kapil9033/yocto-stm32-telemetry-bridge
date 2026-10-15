@@ -444,18 +444,80 @@ syscall; it does not indicate a flash failure.
 
 The current firmware configures USART2 for 115200 baud, 8 data bits, no parity,
 and one stop bit (8N1). The NUCLEO ST-LINK virtual COM port should appear on
-the Pi as `/dev/ttyACM0`. As `root` on the Pi:
+the Pi as `/dev/ttyACM0`.
+
+#### Viewing Gateway Daemon Output
+
+The `gatewayd` systemd service writes its standard output and errors to the
+system journal. As `root` on the Pi, check the service and follow its logs:
 
 ```sh
-stty -F /dev/ttyACM0 115200 raw -echo
-dd if=/dev/ttyACM0 bs=1 count=100 2>/dev/null | hexdump -C
+systemctl status gatewayd --no-pager
+journalctl -u gatewayd -f
 ```
 
-Start the capture first, then press the STM32 RESET button once. The expected
-startup message is `STM32 UART READY`, followed by binary COBS telemetry frames
-with `00` delimiters. `dd` waits until it has read 100 bytes; press Ctrl+C to
-stop early. Keep this as the only process reading `/dev/ttyACM0` during the
-test.
+At startup, expect a line similar to:
+
+```text
+gatewayd[258]: [gatewayd] Starting Industrial Gateway Daemon...
+gatewayd[258]: [gatewayd] Connected to /dev/ttyACM0 successfully!
+```
+
+The process ID and exact messages may differ. Once valid telemetry frames
+arrive, the journal prints decoded values, for example:
+
+```text
+gatewayd[258]: ================ [TELEMETRY FRAME RECEIVED] ================
+gatewayd[258]:  Timestamp (RTC)  : 33399 s
+gatewayd[258]:  Accel X / Y / Z  : 12 mg | -65 mg | 952 mg
+gatewayd[258]:  Photocell Raw    : 1753 / 4095
+gatewayd[258]:  Temperature      : 21 °C
+gatewayd[258]:  Humidity         : 46 %
+gatewayd[258]:  EXTI Button State: RELEASED
+gatewayd[258]: ========================================================
+```
+
+Values change as telemetry arrives. If no photoresistor is connected, the
+reported raw ADC value is not a meaningful light measurement.
+
+#### Capturing Raw STM32 UART Bytes
+
+To inspect the bytes sent by the STM32 directly, stop `gatewayd` first so it
+does not compete with the capture command for `/dev/ttyACM0`. As `root` on the
+Pi:
+
+```sh
+systemctl stop gatewayd
+stty -F /dev/ttyACM0 115200 cs8 -parenb -cstopb raw -echo
+dd if=/dev/ttyACM0 bs=1 count=1000 2>/dev/null | hexdump -C
+```
+
+`stty` configures `/dev/ttyACM0` for 115200 baud, 8 data bits (`cs8`), no
+parity (`-parenb`), one stop bit (`-cstopb`), raw byte handling, and no echo.
+`dd` reads 1000 bytes (`bs=1 count=1000`); `2>/dev/null` hides its transfer
+summary, and `hexdump -C` displays hexadecimal bytes alongside printable
+characters. Start the capture, then press the STM32 RESET button once.
+
+The output begins with the ASCII startup marker `STM32 UART READY`, whose
+hexadecimal bytes are `53 54 4d 33 32 20 55 41 52 54 20 52 45 41 44 59 0d 0a`.
+It is followed by binary COBS-encoded telemetry frames terminated by `00`.
+Frame bytes and decoded values vary, so the full output will not be identical
+each time. For example, the beginning should look like:
+
+```text
+00000000  53 54 4d 33 32 20 55 41 52 54 20 52 45 41 44 59  |STM32 UART READY|
+00000010  0d 0a ...                                        |..|
+```
+
+The `...` represents variable binary telemetry bytes; it is not literal
+`hexdump` output. `dd` exits after reading 1000 bytes. If it has not received
+enough data yet, it waits; press Ctrl+C to stop early. Keep `gatewayd` stopped
+and this as the only process reading `/dev/ttyACM0` during the test. Restart
+the daemon afterwards:
+
+```sh
+systemctl start gatewayd
+```
 
 Useful Raspberry Pi checks:
 
