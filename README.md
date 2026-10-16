@@ -739,6 +739,35 @@ verification is implemented and enabled.
 - [ ] Test accepted and rejected cases: valid image, unsigned image, modified
   image, wrong-board image, interrupted programming, and older signed image.
 
+### Production Firmware Release Bundle
+
+For the current host-verified flashing workflow, provide the customer with a
+release bundle containing:
+
+- `stm32f446_freertos_firmware.bin` — the firmware image.
+- `stm32f446_freertos_firmware.manifest.json` — signed metadata binding the
+  board family, version, image size, and SHA-256 digest.
+- `stm32f446_freertos_firmware.sig` — the Ed25519 signature over that manifest.
+- `secure_firmware.py` and `flash_signed_stm32.sh` — the verification and
+  OpenOCD flashing tools.
+- Customer instructions, including supported hardware, ST-LINK/OpenOCD setup,
+  verification and flash steps, and support contact/version information.
+
+The customer needs the matching public key to verify signatures unless it is
+already installed in a trusted flashing environment. If distributing the
+public key with the bundle, provide its fingerprint through a separate trusted
+channel and instruct the customer to compare it before use. Never distribute
+the private signing key, its passphrase, or a copy of the signing environment.
+
+The current manifest binds the release to the `STM32F446RE` board family; it
+does not bind it to an individual MCU serial number or unique device ID.
+Customer-side verification through the Pi wrapper is a process control, not
+device enforcement: the customer can bypass it and program directly with
+ST-LINK/OpenOCD. Until the STM32 bootloader validates signatures itself, this
+workflow does not guarantee that only signed firmware can execute. If
+per-device authorization is required, design and test a signed device-ID
+policy in addition to bootloader verification.
+
 The Pi-side verifier requires `python3-core`, `python3-crypt`, `python3-io`,
 `python3-json`, and `openssl` in the deployed Yocto image. These dependencies
 were added to the current
