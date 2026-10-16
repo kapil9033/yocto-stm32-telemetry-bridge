@@ -565,6 +565,41 @@ and `** Resetting Target **`. The `_write is not implemented` linker warning
 can appear because the firmware does not provide a C library `_write`
 syscall; it does not indicate a flash failure.
 
+#### Testing Rejection of a Modified Firmware Image
+
+Test that the host-side wrapper blocks a modified image before it starts
+OpenOCD. Run this test on the Pi as `root`. It changes a temporary copy only;
+the released image, signed manifest, signature, and STM32 flash are not changed.
+
+```sh
+cp /home/stm32-update/stm32f446_freertos_firmware.bin \
+  /tmp/stm32f446_freertos_firmware-tampered.bin
+python3 -c 'from pathlib import Path; p=Path("/tmp/stm32f446_freertos_firmware-tampered.bin"); b=bytearray(p.read_bytes()); b[100] ^= 1; p.write_bytes(b)'
+
+/home/stm32-update/flash_signed_stm32.sh \
+  /tmp/stm32f446_freertos_firmware-tampered.bin \
+  /home/stm32-update/stm32f446_freertos_firmware.manifest.json \
+  /home/stm32-update/stm32f446_freertos_firmware.sig \
+  /home/stm32-update/stm32-signing-public.pem
+```
+
+The Python command flips one bit at byte offset 100 in the temporary copy,
+preserving its length while changing its SHA-256 digest. The wrapper should
+exit with an error such as `image SHA-256 does not match signed manifest`.
+There should be **no OpenOCD banner or programming output**; that confirms the
+wrapper rejected the modified image before attempting a flash. Do not run
+OpenOCD directly with the tampered image. Remove the temporary test file when
+finished:
+
+```sh
+rm -f /tmp/stm32f446_freertos_firmware-tampered.bin
+```
+
+This test proves only that the Pi-side wrapper rejects a modified image. It
+does not prove that the STM32 itself refuses unsigned firmware: direct
+ST-LINK/OpenOCD programming can still bypass the wrapper until bootloader
+signature verification is implemented.
+
 ### Checking STM32 UART Output on the Raspberry Pi
 
 The current firmware configures USART2 for 115200 baud, 8 data bits, no parity,
