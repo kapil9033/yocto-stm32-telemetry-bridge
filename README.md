@@ -12,7 +12,8 @@ between the target and host.
 - [Initial Project Scope](#initial-project-scope)
 - [Project Overview](#project-overview)
 - [System Architecture](#system-architecture)
-  - [MCU Task Structure](#mcu-task-structure)
+  - [Implemented Data Flow](#implemented-data-flow)
+  - [STM32 Task Structure](#stm32-task-structure)
 - [Hardware](#hardware)
   - [Bill of Materials](#bill-of-materials)
   - [Hardware Connections and Pinouts](#hardware-connections-and-pinouts)
@@ -57,14 +58,16 @@ work, such as networking, data persistence, and user interfaces.
 
 This project brings those roles together:
 
-- **Real-time MCU — STM32F446RE:** FreeRTOS firmware for ADC sampling with DMA,
-  DS3231 RTC access over I2C, DHT11 single-wire sensing, button input, LCD
-  output, and telemetry communication.
-- **Linux gateway — Raspberry Pi 3 Model B:** A Yocto-based Linux system,
-  booted over NFS, that hosts a C++ daemon for serial parsing, CRC validation,
-  and network-facing telemetry services.
-- **Host-target protocol:** A binary packet format with framing, byte-stuffing,
-  and CRC error checking over a USB CDC-ACM virtual COM port.
+- **STM32F446RE:** Runs the FreeRTOS firmware, samples configured sensors,
+  updates the local LCD, and sends telemetry over USART2.
+- **Raspberry Pi 3 Model B:** Runs the Yocto Linux image and `gatewayd`, which
+  reads the STM32 serial stream, validates telemetry frames, and writes decoded
+  readings to the system journal.
+- **`meta-telemetry-bridge`:** A Yocto build layer on the development host. Its
+  BitBake recipe builds and packages `gatewayd` and its systemd unit into the
+  target image; the layer itself is not a runtime process on the Pi.
+- **NFS:** Used by the development setup to provide or deploy the Pi root
+  filesystem. It does not carry live STM32 telemetry.
 
 ## System Architecture
 
@@ -93,22 +96,57 @@ This project brings those roles together:
                             LCD1602
 ```
 
-### MCU Task Structure
+### Implemented Data Flow
 
-The firmware task structure is organized around acquisition, display, and
-communication:
+In the current implementation, telemetry flows one way from the STM32 to the
+Pi:
+
+```text
+Development host
+  └─ BitBake + meta-telemetry-bridge
+       └─ builds gatewayd and includes it in the Yocto image
+             └─ image/rootfs deployed to or booted by the Raspberry Pi
+
+STM32 sensors and button
+  └─ FreeRTOS telemetry task
+       └─ USART2, 115200 baud, 8N1
+            └─ NUCLEO ST-LINK USB virtual COM port
+                 └─ Raspberry Pi /dev/ttyACM0
+                      └─ gatewayd COBS decode + CRC check
+                           └─ decoded readings in systemd journal
+```
+
+The Pi's USB serial device is the **live telemetry link**. The `gatewayd`
+systemd service reads it at 115200 baud, separates frames at `0x00`, COBS
+decodes each frame, checks its payload length and CRC-16/MODBUS, then prints
+valid telemetry to standard output, which systemd records in the journal. The
+daemon does not currently publish readings over MQTT, HTTP, or another network
+API.
+
+NFS is a separate **boot/deployment path** between the development host and
+the Pi. It supplies or receives the Pi root filesystem; it is not between
+`gatewayd` and the STM32 and does not transport telemetry.
+
+The STM32 also emits the plain-text `STM32 UART READY` startup marker before
+binary telemetry begins. This marker is diagnostic text, not a protocol frame;
+the current gateway parser expects COBS frames and can report an invalid COBS
+frame for those startup bytes before it reaches the first `0x00` delimiter.
+
+### STM32 Task Structure
+
+The current firmware creates one application FreeRTOS task, which performs
+acquisition, display updates, and transmission in sequence once per second:
 
 | Task | Priority | Period / Trigger | Responsibility |
 | :--- | :--- | :--- | :--- |
-| `Task_AnalogDMA` | High | 50 ms | Runs ADC scans into a circular DMA buffer and calculates filtered acceleration values. |
-| `Task_DigitalSens` | Medium | 500 ms | Reads the DS3231 over mutex-protected I2C and samples DHT11 temperature and humidity. |
-| `Task_DisplayUI` | Low | 200 ms | Formats telemetry for the LCD and switches pages based on button input. |
-| `Task_CommParser` | High | Asynchronous / event-driven | Packs telemetry into framed binary packets with CRC16 and transmits it to the gateway. |
+| `TelemetryTask` | `tskIDLE_PRIORITY + 2` | 1 s | Starts ADC circular DMA, reads the accelerometer ADC slots, DS3231 timestamp and DHT11, samples the onboard button, updates the LCD, and sends a telemetry frame over USART2. |
 
-FreeRTOS queues are used to share data between tasks. Additional planned
-responsibilities described for the target include a sensor-acquisition task
-running at a fixed interval, command parsing and dispatch, safety monitoring
-against configurable thresholds, and local display updates.
+The current telemetry path is transmit-only from STM32 to Pi. The gateway
+does not send commands back, and the firmware does not currently implement
+the separate command parser, alarm dispatcher, safety-monitor task, or
+multiple-task queue architecture described in earlier plans. The fourth ADC
+payload slot remains in the protocol even though no photoresistor is connected;
+its raw value should not be interpreted as a light measurement.
 
 ## Hardware
 
@@ -373,25 +411,26 @@ add framing overhead.
 
 ### STM32 Target
 
-- **Sensor acquisition:** Reads DHT11 temperature and humidity, DS3231 time,
-  and accelerometer data. The documented design uses DMA-based acquisition.
-- **Communication parser:** Monitors incoming USB CDC-ACM bytes, recognizes
-  frames, validates CRC16, and updates runtime configuration or dispatches
-  commands to other tasks.
-- **Safety monitor:** Evaluates readings against configurable thresholds
-  (such as tilt angle or over-temperature) and can trigger alarms without
-  blocking sensor sampling.
-- **Display task:** Updates the LCD1602 or 7-segment display with system status,
-  IP flags, and sensor values.
+- **Runtime:** STM32F446RE running FreeRTOS firmware flashed to MCU flash.
+- **Current telemetry task:** Acquires ADC data using DMA, reads the DS3231
+  and DHT11, samples the onboard button, updates the LCD1602, and transmits
+  telemetry once per second.
+- **Serial output:** USART2 is configured for 115200 baud, 8 data bits, no
+  parity, one stop bit (8N1), with no hardware flow control. The NUCLEO
+  ST-LINK USB virtual COM port presents this stream to Linux as
+  `/dev/ttyACM0`.
 
 ### Yocto Linux Gateway
 
-- **Custom BSP layer (`meta-hetero-gateway`):** Provides an image recipe with
-  kernel configuration for CDC-ACM devices and network boot, plus systemd
-  units to start the gateway daemon.
-- **Gateway daemon (`gatewayd`):** A C++17 user-space application with a
-  POSIX termios serial wrapper, asynchronous non-blocking I/O, and a frame
-  decoder that validates checksums and formats telemetry as logs or JSON.
+- **Build-time layer (`meta-telemetry-bridge`):** Contains the `gatewayd`
+  BitBake recipe and systemd unit. BitBake cross-compiles the daemon for the
+  configured Raspberry Pi machine and installs it as `/usr/bin/gatewayd`.
+  The layer is used during image builds; it is not a running component on the
+  Pi.
+- **Runtime (`gatewayd`):** A C++17 Linux daemon started by systemd. It reads
+  `/dev/ttyACM0`, validates COBS framing, payload length, and CRC-16/MODBUS,
+  then prints decoded telemetry to the system journal. It currently does not
+  provide a network API or persist readings to a database.
 
 ## Building the STM32 Firmware
 
