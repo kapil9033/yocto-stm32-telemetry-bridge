@@ -1,137 +1,248 @@
 #!/usr/bin/env python3
-"""Create and verify signed STM32 firmware manifests using OpenSSL Ed25519."""
+"""Create, inspect, and verify STM32 signed firmware packages."""
 
 import argparse
 import hashlib
 import json
 from pathlib import Path
+import struct
 import subprocess
 import sys
 import tempfile
 
-
-def canonical_manifest(data):
-    return (json.dumps(data, sort_keys=True, separators=(",", ":")) + "\n").encode()
+PACKAGE_MAGIC = b"STM32SF1"
+PACKAGE_FORMAT = 1
+BOARD_FIELD_SIZE = 16
+SIGNED_HEADER_FORMAT = "<8sI16sII32s"
+SIGNED_HEADER_SIZE = struct.calcsize(SIGNED_HEADER_FORMAT)
+SIGNATURE_SIZE = 64
+PACKAGE_HEADER_SIZE = 512
+STM32F446RE_SLOT_SIZE = 0x60000
+MAX_IMAGE_SIZE = STM32F446RE_SLOT_SIZE - PACKAGE_HEADER_SIZE
+ED25519_SPKI_PREFIX = bytes.fromhex("302a300506032b6570032100")
 
 
 def run_openssl(arguments):
     try:
-        subprocess.run(["openssl", "pkeyutl", *arguments], check=True)
+        subprocess.run(["openssl", *arguments], check=True)
     except FileNotFoundError as error:
         raise RuntimeError("openssl is required but was not found in PATH") from error
     except subprocess.CalledProcessError as error:
-        raise RuntimeError(f"OpenSSL signature operation failed (exit {error.returncode})") from error
+        raise RuntimeError(f"OpenSSL operation failed (exit {error.returncode})") from error
 
 
-def sign(args):
-    image = Path(args.image)
-    image_bytes = image.read_bytes()
-    manifest = {
-        "board": args.board,
-        "format": 1,
-        "image_size": len(image_bytes),
-        "sha256": hashlib.sha256(image_bytes).hexdigest(),
-        "version": args.version,
-    }
-    manifest_bytes = canonical_manifest(manifest)
-    manifest_path = Path(args.manifest)
-    signature_path = Path(args.signature)
+def board_bytes(board):
+    try:
+        encoded = board.encode("ascii")
+    except UnicodeEncodeError as error:
+        raise RuntimeError("board ID must contain ASCII characters") from error
+    if not encoded or len(encoded) >= BOARD_FIELD_SIZE:
+        raise RuntimeError(f"board ID must be 1 to {BOARD_FIELD_SIZE - 1} ASCII bytes")
+    return encoded.ljust(BOARD_FIELD_SIZE, b"\0")
 
-    with tempfile.TemporaryDirectory(prefix="stm32-sign-") as temporary_directory:
-        temporary_manifest = Path(temporary_directory) / "manifest.json"
-        temporary_signature = Path(temporary_directory) / "manifest.sig"
-        temporary_manifest.write_bytes(manifest_bytes)
+
+def load_public_key(public_key):
+    with tempfile.TemporaryDirectory(prefix="stm32-public-key-") as temp_dir:
+        der_path = Path(temp_dir) / "public.der"
         run_openssl([
+            "pkey",
+            "-pubin",
+            "-inform",
+            "PEM",
+            "-in",
+            public_key,
+            "-outform",
+            "DER",
+            "-out",
+            str(der_path),
+        ])
+        der = der_path.read_bytes()
+    if len(der) != len(ED25519_SPKI_PREFIX) + 32 or not der.startswith(ED25519_SPKI_PREFIX):
+        raise RuntimeError("public key must be an Ed25519 SubjectPublicKeyInfo PEM")
+    return der[len(ED25519_SPKI_PREFIX):]
+
+
+def canonical_signed_header(board, version, image):
+    if not 0 <= version <= 0xFFFFFFFF:
+        raise RuntimeError("version code must be an unsigned 32-bit integer")
+    if not image or len(image) > MAX_IMAGE_SIZE:
+        raise RuntimeError(
+            f"image size must be between 1 and {MAX_IMAGE_SIZE} bytes for the STM32F446RE slot"
+        )
+    image_digest = hashlib.blake2b(image, digest_size=32).digest()
+    return struct.pack(
+        SIGNED_HEADER_FORMAT,
+        PACKAGE_MAGIC,
+        PACKAGE_FORMAT,
+        board_bytes(board),
+        version,
+        len(image),
+        image_digest,
+    )
+
+
+def create_package(args):
+    image = Path(args.image).read_bytes()
+    signed_header = canonical_signed_header(args.board, args.version_code, image)
+    with tempfile.TemporaryDirectory(prefix="stm32-package-") as temp_dir:
+        message_path = Path(temp_dir) / "signed-header.bin"
+        signature_path = Path(temp_dir) / "signature.bin"
+        message_path.write_bytes(signed_header)
+        run_openssl([
+            "pkeyutl",
             "-sign",
             "-rawin",
             "-inkey",
             args.private_key,
             "-in",
-            str(temporary_manifest),
+            str(message_path),
             "-out",
-            str(temporary_signature),
+            str(signature_path),
         ])
-        manifest_path.write_bytes(manifest_bytes)
-        signature_path.write_bytes(temporary_signature.read_bytes())
+        signature = signature_path.read_bytes()
+    if len(signature) != SIGNATURE_SIZE:
+        raise RuntimeError(f"expected a {SIGNATURE_SIZE}-byte Ed25519 signature")
+    header = signed_header + signature
+    header += bytes(PACKAGE_HEADER_SIZE - len(header))
+    package_path = Path(args.package)
+    package_path.write_bytes(header + image)
+    print(
+        f"Created signed package {package_path} for {args.board} version "
+        f"{args.version_code} ({len(image)} image bytes)"
+    )
 
-    print(f"Signed {image} ({manifest['image_size']} bytes, {manifest['sha256']})")
-    print(f"Manifest: {manifest_path}")
-    print(f"Signature: {signature_path}")
 
-
-def verify(args):
-    image_bytes = Path(args.image).read_bytes()
-    manifest_path = Path(args.manifest)
-    manifest_bytes = manifest_path.read_bytes()
-
+def parse_package(package):
+    if len(package) < PACKAGE_HEADER_SIZE:
+        raise RuntimeError("package is shorter than the fixed header")
+    fields = struct.unpack(SIGNED_HEADER_FORMAT, package[:SIGNED_HEADER_SIZE])
+    magic, format_version, raw_board, version, image_size, image_digest = fields
+    if magic != PACKAGE_MAGIC:
+        raise RuntimeError("invalid firmware package magic")
+    if format_version != PACKAGE_FORMAT:
+        raise RuntimeError(f"unsupported firmware package format {format_version}")
+    terminator = raw_board.find(b"\0")
+    if terminator <= 0 or any(raw_board[terminator:]):
+        raise RuntimeError("invalid board ID encoding in package")
     try:
-        manifest = json.loads(manifest_bytes)
-    except (UnicodeDecodeError, json.JSONDecodeError) as error:
-        raise RuntimeError(f"invalid manifest JSON: {error}") from error
+        board = raw_board[:terminator].decode("ascii")
+    except UnicodeDecodeError as error:
+        raise RuntimeError("board ID in package is not ASCII") from error
+    signature_start = SIGNED_HEADER_SIZE
+    signature_end = signature_start + SIGNATURE_SIZE
+    signature = package[signature_start:signature_end]
+    if any(package[signature_end:PACKAGE_HEADER_SIZE]):
+        raise RuntimeError("package reserved header bytes must be zero")
+    image = package[PACKAGE_HEADER_SIZE:]
+    if image_size == 0 or image_size > MAX_IMAGE_SIZE:
+        raise RuntimeError("signed image size is outside the STM32F446RE application slot")
+    if image_size != len(image):
+        raise RuntimeError("package payload length does not match signed image size")
+    return {
+        "board": board,
+        "version_code": version,
+        "image_size": image_size,
+        "digest": image_digest,
+        "signature": signature,
+        "signed_header": package[:SIGNED_HEADER_SIZE],
+        "image": image,
+    }
 
-    expected_keys = {"board", "format", "image_size", "sha256", "version"}
-    if not isinstance(manifest, dict) or set(manifest) != expected_keys:
-        raise RuntimeError("manifest has missing or unexpected fields")
-    if canonical_manifest(manifest) != manifest_bytes:
-        raise RuntimeError("manifest is not in canonical format")
-    if type(manifest["format"]) is not int or manifest["format"] != 1:
-        raise RuntimeError("unsupported manifest format")
-    if manifest["board"] != args.board:
+
+def verify_package(args):
+    package_path = Path(args.package)
+    package = package_path.read_bytes()
+    metadata = parse_package(package)
+    if metadata["board"] != args.board:
         raise RuntimeError(
-            f"board mismatch: image is for {manifest['board']!r}, expected {args.board!r}"
+            f"board mismatch: package is for {metadata['board']!r}, expected {args.board!r}"
         )
-    if type(manifest["image_size"]) is not int or manifest["image_size"] != len(image_bytes):
-        raise RuntimeError("image size does not match signed manifest")
-    image_digest = hashlib.sha256(image_bytes).hexdigest()
-    if manifest["sha256"] != image_digest:
-        raise RuntimeError("image SHA-256 does not match signed manifest")
-
-    with tempfile.TemporaryDirectory(prefix="stm32-verify-") as temporary_directory:
-        temporary_manifest = Path(temporary_directory) / "manifest.json"
-        temporary_manifest.write_bytes(manifest_bytes)
+    actual_digest = hashlib.blake2b(metadata["image"], digest_size=32).digest()
+    if actual_digest != metadata["digest"]:
+        raise RuntimeError("image BLAKE2b-256 digest does not match signed header")
+    with tempfile.TemporaryDirectory(prefix="stm32-package-verify-") as temp_dir:
+        message_path = Path(temp_dir) / "signed-header.bin"
+        signature_path = Path(temp_dir) / "signature.bin"
+        message_path.write_bytes(metadata["signed_header"])
+        signature_path.write_bytes(metadata["signature"])
         run_openssl([
+            "pkeyutl",
             "-verify",
             "-pubin",
             "-inkey",
             args.public_key,
             "-rawin",
             "-in",
-            str(temporary_manifest),
+            str(message_path),
             "-sigfile",
-            args.signature,
+            str(signature_path),
         ])
-
     print(
-        f"Signature valid: {args.image} is authorized for {manifest['board']} "
-        f"version {manifest['version']} ({manifest['image_size']} bytes)"
+        f"Signature valid: {package_path} is authorized for {metadata['board']} "
+        f"version {metadata['version_code']} ({metadata['image_size']} bytes)"
     )
+
+
+def export_public_key(args):
+    key = load_public_key(args.public_key)
+    lines = [
+        "#ifndef STM32_BOOT_PUBLIC_KEY_H",
+        "#define STM32_BOOT_PUBLIC_KEY_H",
+        "",
+        "#include <stdint.h>",
+        "",
+        "static const uint8_t stm32_boot_public_key[32] = {",
+    ]
+    for offset in range(0, len(key), 8):
+        values = ", ".join(f"0x{byte:02x}U" for byte in key[offset:offset + 8])
+        lines.append(f"    {values},")
+    lines.extend(["};", "", "#endif"])
+    Path(args.output).write_text("\n".join(lines) + "\n", encoding="ascii")
+
+
+def inspect_package(args):
+    metadata = parse_package(Path(args.package).read_bytes())
+    print(json.dumps({
+        "board": metadata["board"],
+        "version_code": metadata["version_code"],
+        "image_size": metadata["image_size"],
+        "digest_blake2b_256": metadata["digest"].hex(),
+    }, indent=2, sort_keys=True))
 
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     subparsers = parser.add_subparsers(dest="command", required=True)
 
-    sign_parser = subparsers.add_parser("sign", help="sign an image manifest")
-    sign_parser.add_argument("--image", required=True)
-    sign_parser.add_argument("--board", required=True)
-    sign_parser.add_argument("--version", required=True)
-    sign_parser.add_argument("--private-key", required=True)
-    sign_parser.add_argument("--manifest", required=True)
-    sign_parser.add_argument("--signature", required=True)
-    sign_parser.set_defaults(run=sign)
+    package_parser = subparsers.add_parser("package", help="create a signed firmware package")
+    package_parser.add_argument("--image", required=True)
+    package_parser.add_argument("--board", required=True)
+    package_parser.add_argument("--version-code", required=True, type=int)
+    package_parser.add_argument("--private-key", required=True)
+    package_parser.add_argument("--package", required=True)
+    package_parser.set_defaults(run=create_package)
 
-    verify_parser = subparsers.add_parser("verify", help="verify image and manifest")
-    verify_parser.add_argument("--image", required=True)
-    verify_parser.add_argument("--manifest", required=True)
-    verify_parser.add_argument("--signature", required=True)
+    verify_parser = subparsers.add_parser("verify", help="verify a signed firmware package")
+    verify_parser.add_argument("--package", required=True)
     verify_parser.add_argument("--public-key", required=True)
     verify_parser.add_argument("--board", required=True)
-    verify_parser.set_defaults(run=verify)
+    verify_parser.set_defaults(run=verify_package)
+
+    inspect_parser = subparsers.add_parser("inspect", help="display signed package metadata")
+    inspect_parser.add_argument("--package", required=True)
+    inspect_parser.set_defaults(run=inspect_package)
+
+    key_parser = subparsers.add_parser(
+        "export-public-key", help="generate a C header containing an Ed25519 public key"
+    )
+    key_parser.add_argument("--public-key", required=True)
+    key_parser.add_argument("--output", required=True)
+    key_parser.set_defaults(run=export_public_key)
 
     args = parser.parse_args()
     try:
         args.run(args)
-    except (OSError, RuntimeError) as error:
+    except (OSError, RuntimeError, ValueError, struct.error) as error:
         print(f"ERROR: {error}", file=sys.stderr)
         return 1
     return 0
