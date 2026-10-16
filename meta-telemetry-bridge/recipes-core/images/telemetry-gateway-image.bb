@@ -18,6 +18,9 @@ IMAGE_INSTALL:append = " \
     gatewayd \
     openssl \
     python3-core \
+    python3-crypt \
+    python3-io \
+    python3-json \
     telemetry-daemon \
     sensor-gateway-app \
     openocd \

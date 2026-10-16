@@ -459,9 +459,18 @@ copy the image, signed manifest, signature, public key, and flashing tools to
 the Pi through the exported NFS root. Never copy the private signing key to the
 Pi, NFS root, or source repository.
 
+Run host-side commands below from the repository root, not from
+`stm32-firmware/build`. For example:
+
+```sh
+cd ~/Desktop/YoctoProject/yocto-stm32-telemetry-bridge
+```
+
 Generate an encrypted Ed25519 signing key once in a controlled release
-environment. Keep the private key out of source control and the Pi; restrict
-access to it and maintain a protected offline backup:
+environment. If the key already exists, do not generate a replacement: a
+different key will not match the public key installed on the Pi. Keep the
+private key out of source control and the Pi; restrict access to it and
+maintain a protected offline backup:
 
 ```sh
 install -d -m 700 "$HOME/.config/telemetry-bridge"
@@ -475,8 +484,8 @@ openssl pkey \
 ```
 
 The private-key passphrase is requested interactively by OpenSSL; do not put it
-in a command argument or script. Sign each release after building it. Use a
-unique release version for `--version`:
+in a command argument or script. Sign each release after building it, changing
+`--version` to the release's unique version:
 
 ```sh
 cmake --build stm32-firmware/build
@@ -490,32 +499,54 @@ python3 stm32-firmware/tools/secure_firmware.py sign \
 ```
 
 The detached signature authenticates a canonical manifest containing the board
-ID, release version, image size, and SHA-256 digest. Install `openssl` and
-`python3-core` in the Pi's Yocto image for verification. For the existing
-`Rasp_Build/conf/local.conf` setup, include both packages in `IMAGE_INSTALL`
-and rebuild/deploy the image if they are not already present.
+ID, release version, image size, and SHA-256 digest. Install `openssl`,
+`python3-core`, `python3-crypt`, `python3-io`, and `python3-json` in the Pi's
+Yocto image for verification. Yocto splits Python's `hashlib`, `json`, and
+`tempfile` modules into `python3-crypt`, `python3-json`, and `python3-io`,
+respectively. For the existing `Rasp_Build/conf/local.conf` setup, include all
+five packages in `IMAGE_INSTALL` and rebuild/deploy the image if they are not
+already present.
 
 Copy the release files, the verifier, the flash wrapper, and **only the public
-key** into the NFS root. Example, run on the development host from the
-repository root:
+key** into the NFS root. These commands run on the development host from the
+repository root, after signing:
 
 ```sh
 sudo install -d -m 755 /srv/nfs/rpi-rootfs/home/stm32-update
-sudo install -m 644 stm32-firmware/build/stm32f446_freertos_firmware.bin \
-  /srv/nfs/rpi-rootfs/home/stm32-update/
-sudo install -m 644 stm32-firmware/build/stm32f446_freertos_firmware.manifest.json \
-  /srv/nfs/rpi-rootfs/home/stm32-update/
-sudo install -m 644 stm32-firmware/build/stm32f446_freertos_firmware.sig \
-  /srv/nfs/rpi-rootfs/home/stm32-update/
-sudo install -m 644 stm32-firmware/tools/secure_firmware.py \
+sudo install -m 644 \
+  stm32-firmware/build/stm32f446_freertos_firmware.bin \
+  stm32-firmware/build/stm32f446_freertos_firmware.manifest.json \
+  stm32-firmware/build/stm32f446_freertos_firmware.sig \
+  stm32-firmware/tools/secure_firmware.py \
   "$HOME/.config/telemetry-bridge/stm32-signing-public.pem" \
   /srv/nfs/rpi-rootfs/home/stm32-update/
 sudo install -m 755 stm32-firmware/tools/flash_signed_stm32.sh \
   /srv/nfs/rpi-rootfs/home/stm32-update/
 ```
 
-After the Pi boots, run the wrapper as `root`. It rejects a bad signature,
-changed image, or manifest for a different board before it starts OpenOCD:
+After the Pi boots from this updated NFS root, check that the files are present.
+If they are missing, confirm the Pi is using `/srv/nfs/rpi-rootfs` as its NFS
+root and repeat the host-side copy commands:
+
+```sh
+ls -l /home/stm32-update/
+```
+
+As `root` on the Pi, verify the signed release first. This reports success only
+when the signature, image digest, image size, and board ID all match:
+
+```sh
+python3 /home/stm32-update/secure_firmware.py verify \
+  --image /home/stm32-update/stm32f446_freertos_firmware.bin \
+  --manifest /home/stm32-update/stm32f446_freertos_firmware.manifest.json \
+  --signature /home/stm32-update/stm32f446_freertos_firmware.sig \
+  --public-key /home/stm32-update/stm32-signing-public.pem \
+  --board STM32F446RE
+```
+
+If verification succeeds, run the wrapper as `root`. It performs the same
+checks immediately before invoking OpenOCD, so do not substitute a direct
+OpenOCD command:
 
 ```sh
 /home/stm32-update/flash_signed_stm32.sh \
@@ -673,8 +704,9 @@ verification is implemented and enabled.
 - [ ] Test accepted and rejected cases: valid image, unsigned image, modified
   image, wrong-board image, interrupted programming, and older signed image.
 
-The Pi-side verifier requires `python3-core` and `openssl` in the deployed
-Yocto image. These dependencies were added to the current
+The Pi-side verifier requires `python3-core`, `python3-crypt`, `python3-io`,
+`python3-json`, and `openssl` in the deployed Yocto image. These dependencies
+were added to the current
 `Rasp_Build/conf/local.conf`; rebuild/deploy that image before using the signed
 flash wrapper. The host-side gate does not replace a bootloader check: direct
 debug-port programming can bypass software running on Linux.

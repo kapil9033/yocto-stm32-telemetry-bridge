@@ -7,7 +7,7 @@ DISTRO_FEATURES:append = " systemd"
 DISTRO_FEATURES:backfill_remove = "sysvinit"
 
 # Automatically install gateway daemon service into image
-IMAGE_INSTALL:append = " gatewayd openssl python3-core"
+IMAGE_INSTALL:append = " gatewayd openssl python3-core python3-crypt python3-io python3-json"
 
 # Yocto Parallel Processing Optimization
 BB_NUMBER_THREADS ?= "${@oe.utils.cpu_count()}"
