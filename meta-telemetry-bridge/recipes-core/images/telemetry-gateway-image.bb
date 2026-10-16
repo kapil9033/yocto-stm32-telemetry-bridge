@@ -16,6 +16,8 @@ IMAGE_FEATURES += " \
 IMAGE_INSTALL:append = " \
     packagegroup-core-boot \
     gatewayd \
+    openssl \
+    python3-core \
     telemetry-daemon \
     sensor-gateway-app \
     openocd \

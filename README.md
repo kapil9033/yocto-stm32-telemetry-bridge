@@ -22,6 +22,8 @@ between the target and host.
   - [Telemetry Payload](#telemetry-payload)
 - [Software Components](#software-components)
 - [Building the STM32 Firmware](#building-the-stm32-firmware)
+- [EU Cyber Resilience Act (CRA) Readiness](#eu-cyber-resilience-act-cra-readiness)
+  - [Signed STM32 Firmware Flashing](#signed-stm32-firmware-flashing)
 - [Implementation Notes](#implementation-notes)
 
 ## Initial Project Scope
@@ -452,27 +454,80 @@ The ELF, BIN, and HEX firmware images are written to `stm32-firmware/build`.
 ### Flashing the STM32 from the Raspberry Pi
 
 In this setup, the NUCLEO-F446RE ST-LINK USB connector is attached to the
-Raspberry Pi. Build the firmware on the development host, then copy the BIN
-image into the exported NFS root:
+Raspberry Pi. Build and sign the firmware on the trusted development host;
+copy the image, signed manifest, signature, public key, and flashing tools to
+the Pi through the exported NFS root. Never copy the private signing key to the
+Pi, NFS root, or source repository.
+
+Generate an encrypted Ed25519 signing key once in a controlled release
+environment. Keep the private key out of source control and the Pi; restrict
+access to it and maintain a protected offline backup:
 
 ```sh
-# Run on the development host from the repository root
+install -d -m 700 "$HOME/.config/telemetry-bridge"
+openssl genpkey -algorithm ED25519 -aes-256-cbc \
+  -out "$HOME/.config/telemetry-bridge/stm32-signing-private.pem"
+chmod 600 "$HOME/.config/telemetry-bridge/stm32-signing-private.pem"
+openssl pkey \
+  -in "$HOME/.config/telemetry-bridge/stm32-signing-private.pem" \
+  -pubout \
+  -out "$HOME/.config/telemetry-bridge/stm32-signing-public.pem"
+```
+
+The private-key passphrase is requested interactively by OpenSSL; do not put it
+in a command argument or script. Sign each release after building it. Use a
+unique release version for `--version`:
+
+```sh
 cmake --build stm32-firmware/build
-sudo cp stm32-firmware/build/stm32f446_freertos_firmware.bin \
-  /srv/nfs/rpi-rootfs/home/
+python3 stm32-firmware/tools/secure_firmware.py sign \
+  --image stm32-firmware/build/stm32f446_freertos_firmware.bin \
+  --board STM32F446RE \
+  --version 1.0.0 \
+  --private-key "$HOME/.config/telemetry-bridge/stm32-signing-private.pem" \
+  --manifest stm32-firmware/build/stm32f446_freertos_firmware.manifest.json \
+  --signature stm32-firmware/build/stm32f446_freertos_firmware.sig
 ```
 
-With the Pi booted from that NFS root, run OpenOCD as `root` on the Pi. The
-binary image is programmed at the STM32F446RE flash base address
-`0x08000000`:
+The detached signature authenticates a canonical manifest containing the board
+ID, release version, image size, and SHA-256 digest. Install `openssl` and
+`python3-core` in the Pi's Yocto image for verification. For the existing
+`Rasp_Build/conf/local.conf` setup, include both packages in `IMAGE_INSTALL`
+and rebuild/deploy the image if they are not already present.
+
+Copy the release files, the verifier, the flash wrapper, and **only the public
+key** into the NFS root. Example, run on the development host from the
+repository root:
 
 ```sh
-openocd \
-  -s /usr/share/openocd/scripts \
-  -f interface/stlink.cfg \
-  -f target/stm32f4x.cfg \
-  -c "program /home/stm32f446_freertos_firmware.bin 0x08000000 verify reset exit"
+sudo install -d -m 755 /srv/nfs/rpi-rootfs/home/stm32-update
+sudo install -m 644 stm32-firmware/build/stm32f446_freertos_firmware.bin \
+  /srv/nfs/rpi-rootfs/home/stm32-update/
+sudo install -m 644 stm32-firmware/build/stm32f446_freertos_firmware.manifest.json \
+  /srv/nfs/rpi-rootfs/home/stm32-update/
+sudo install -m 644 stm32-firmware/build/stm32f446_freertos_firmware.sig \
+  /srv/nfs/rpi-rootfs/home/stm32-update/
+sudo install -m 644 stm32-firmware/tools/secure_firmware.py \
+  "$HOME/.config/telemetry-bridge/stm32-signing-public.pem" \
+  /srv/nfs/rpi-rootfs/home/stm32-update/
+sudo install -m 755 stm32-firmware/tools/flash_signed_stm32.sh \
+  /srv/nfs/rpi-rootfs/home/stm32-update/
 ```
+
+After the Pi boots, run the wrapper as `root`. It rejects a bad signature,
+changed image, or manifest for a different board before it starts OpenOCD:
+
+```sh
+/home/stm32-update/flash_signed_stm32.sh \
+  /home/stm32-update/stm32f446_freertos_firmware.bin \
+  /home/stm32-update/stm32f446_freertos_firmware.manifest.json \
+  /home/stm32-update/stm32f446_freertos_firmware.sig \
+  /home/stm32-update/stm32-signing-public.pem
+```
+
+On success, the wrapper invokes OpenOCD with the existing ST-LINK workflow and
+its flash read-back `verify`. OpenOCD's `verify` checks that programmed flash
+matches the input file; it does not check authenticity by itself.
 
 Successful output includes `** Programming Finished **`, `** Verified OK **`,
 and `** Resetting Target **`. The `_write is not implemented` linker warning
@@ -570,6 +625,59 @@ journalctl -u gatewayd -b --no-pager -n 50
 The service and journal commands apply to images that include `gatewayd` and
 systemd. The serial device appearing confirms USB enumeration only; valid COBS
 frames must still be captured and decoded to confirm end-to-end telemetry.
+
+## EU Cyber Resilience Act (CRA) Readiness
+
+This section tracks engineering work toward CRA cybersecurity requirements;
+it is not a conformity assessment or a claim that the product currently
+complies. The current priority is to prevent an unapproved STM32 firmware
+image from being accepted for release and, ultimately, from executing on the
+device.
+
+### Signed STM32 Firmware Flashing
+
+**Current phase — host-side release gate (implemented):**
+
+- [x] Sign a canonical manifest with Ed25519. It binds the `STM32F446RE` board
+  ID, release version, binary size, and SHA-256 image digest.
+- [x] Verify the manifest signature, expected board ID, image size, and digest
+  on the Pi before the flash wrapper invokes OpenOCD.
+- [x] Keep normal ST-LINK/OpenOCD programming; retain OpenOCD read-back
+  verification as a separate integrity check.
+- [x] Keep the private signing key out of the repository and Pi; distribute
+  only the public verification key.
+
+This is an interim process control, **not secure boot**. A Pi administrator
+can bypass the wrapper, and an attacker able to modify the Pi's trusted public
+key or flash directly through ST-LINK can bypass host-side verification. Do
+not describe the STM32 as enforcing signed firmware until device-side
+verification is implemented and enabled.
+
+**Next phase — STM32 boot-time enforcement (not yet implemented):**
+
+- [ ] Define a flash layout that reserves protected space for a first-stage
+  bootloader and places the application at a non-zero flash address.
+- [ ] Select and integrate a maintained signature-verification implementation
+  that fits STM32F446RE flash/RAM limits; embed only the public key in the
+  bootloader.
+- [ ] Verify application board ID, image length, digest, and signature before
+  jumping to the application; fail closed on invalid images.
+- [ ] Update linker and OpenOCD programming addresses. Keep ST-LINK/OpenOCD for
+  routine programming, but make the bootloader reject unauthorized images
+  even when they are written directly.
+- [ ] Decide how version rollback is prevented, how signing keys are rotated
+  or revoked, and how failed updates are recovered. The signed version field
+  is currently recorded but no anti-rollback state is enforced.
+- [ ] Assess STM32 readout/debug protection and its impact on development,
+  manufacturing, field service, and recovery before enabling any option bytes.
+- [ ] Test accepted and rejected cases: valid image, unsigned image, modified
+  image, wrong-board image, interrupted programming, and older signed image.
+
+The Pi-side verifier requires `python3-core` and `openssl` in the deployed
+Yocto image. These dependencies were added to the current
+`Rasp_Build/conf/local.conf`; rebuild/deploy that image before using the signed
+flash wrapper. The host-side gate does not replace a bootloader check: direct
+debug-port programming can bypass software running on Linux.
 
 ## Implementation Notes
 
