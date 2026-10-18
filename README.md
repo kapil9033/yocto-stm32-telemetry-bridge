@@ -23,6 +23,14 @@ between the target and host.
 - [Software Components](#software-components)
 - [Building the STM32 Firmware](#building-the-stm32-firmware)
 - [EU Cyber Resilience Act (CRA) Readiness](#eu-cyber-resilience-act-cra-readiness)
+  - [Phased Security Checklist](#phased-security-checklist)
+    - [Phase 0: Product Scope and Threat Model](#phase-0-product-scope-and-threat-model)
+    - [Phase 1: Release and Pi Flashing Controls](#phase-1-release-and-pi-flashing-controls)
+    - [Phase 2: STM32 Boot-Time Firmware Enforcement](#phase-2-stm32-boot-time-firmware-enforcement)
+    - [Phase 3: Production Hardware and Trust Protection](#phase-3-production-hardware-and-trust-protection)
+    - [Phase 4: Communications and Data Protection](#phase-4-communications-and-data-protection)
+    - [Phase 5: Vulnerability Handling and Security Support](#phase-5-vulnerability-handling-and-security-support)
+    - [Phase 6: Security Verification and Release Evidence](#phase-6-security-verification-and-release-evidence)
   - [Signed STM32 Firmware Flashing](#signed-stm32-firmware-flashing)
     - [Why Boot-Time Verification Is Necessary](#why-boot-time-verification-is-necessary)
     - [Flash Layout and Recovery](#flash-layout-and-recovery)
@@ -819,48 +827,191 @@ frames must still be captured and decoded to confirm end-to-end telemetry.
 
 ## EU Cyber Resilience Act (CRA) Readiness
 
-This section tracks engineering work toward CRA cybersecurity requirements;
-it is not a conformity assessment or a claim that the product currently
-complies. The current priority is to prevent an unapproved STM32 firmware
-image from being accepted for release and, ultimately, from executing on the
-device.
+This roadmap tracks product-security work relevant to the EU Cyber Resilience
+Act (CRA); it is not legal advice, a conformity assessment, or a claim that
+the product currently complies. The CRA sets outcome-oriented cybersecurity
+requirements. Controls such as a dedicated secure element, encryption on every
+interface, or disabling every debug port are not automatically the only
+acceptable solution in every product: select proportionate controls from the
+documented product scope, threat model, and risk assessment. Confirm applicable
+obligations and dates for the product before placing it on the EU market. See
+the [official CRA text](https://eur-lex.europa.eu/eli/reg/2024/2847/oj).
 
-### Signed STM32 Firmware Flashing
+### Phased Security Checklist
 
-**Why this phase is necessary:** Pi-side verification is bypassable when an
-operator or attacker can invoke OpenOCD directly or replace host software.
-Boot-time verification moves the trust decision onto the STM32 and prevents
-the application from executing unless it passes the bootloader's signature,
-board, size, digest, and vector checks.
+Keep this checklist stable and update item status as implementation and
+verification are completed. A checked item records completed engineering work;
+it does not by itself establish production readiness or CRA compliance.
 
-**Implemented in the repository:**
+#### Phase 0: Product Scope and Threat Model
 
-- [x] Host release tool packages the application and signed metadata in a
-  fixed-header `.sfu` package using standard Ed25519 and BLAKE2b-256.
-- [x] Bootloader embeds the public key, verifies package authenticity and
-  bounds at startup, fails closed on rejection, and branches to the app only
-  after successful verification.
-- [x] Linker layout reserves 128 KiB for the bootloader and 384 KiB for one
-  application package slot; routine OpenOCD application updates write at
-  `0x08020000`.
-- [x] Pi wrapper verifies the signed package before invoking OpenOCD.
-- [x] Private signing key stays on the controlled release host; customer
-  release bundle contains only the signed package and public key.
-- [x] Bench-test bootloader provisioning, valid signed-image boot, rejection
-  of a directly programmed payload-tampered image, and ST-LINK recovery on a
-  NUCLEO-F446RE. See [Bench Test: STM32 Boot-Time Signature Enforcement](#bench-test-stm32-boot-time-signature-enforcement).
-- [ ] Expand hardware coverage to unsigned, wrong-board, malformed, and
-  interrupted updates before production release.
-- [ ] Decide anti-rollback enforcement, key rotation/revocation, and
-  write/readout/debug protection policies. The signed version is recorded but
-  not enforced; direct physical ST-LINK access can still replace the
+**Why:** Security controls should follow the product's intended use, interfaces,
+deployment environment, and likely attackers. This also establishes which CRA
+obligations and conformity steps apply, instead of treating example controls as
+universal legal requirements.
+
+- [ ] Define the product boundary, intended use, deployment and service
+  environments, users, external interfaces, expected service life, and whether
+  the product will be placed on the EU market.
+- [ ] Map assets, data flows, trust boundaries, and attack paths, including
+  unauthorized firmware updates, Pi compromise, physical debug access, and
+  recovery/service procedures.
+- [ ] Determine applicable CRA requirements and product classification with
+  appropriate compliance expertise; turn applicable requirements into
+  verifiable security requirements and release criteria.
+
+#### Phase 1: Release and Pi Flashing Controls
+
+**Why:** A signed release prevents unnoticed alteration, while access controls
+on the Pi reduce accidental or unauthorized use of OpenOCD and ST-LINK. A
+wrapper alone is not an access-control boundary: a Pi administrator can bypass
+it, replace the verifier or public key, or invoke programming tools directly.
+
+- [ ] Sign a canonical manifest with Ed25519. It binds the STM32F446RE board
+  ID, release version, binary size, and SHA-256 image digest.
+- [ ] Verify the manifest signature, expected board ID, image size, and digest
+  on the Pi before the flash wrapper invokes OpenOCD.
+- [x] Keep normal ST-LINK/OpenOCD programming; retain OpenOCD read-back
+  verification as a separate integrity check.
+- [x] Keep the private signing key out of the repository and Pi; distribute
+  only the public verification key.
+- [x] Verify the signed firmware package in the Pi flash wrapper before it
+  invokes OpenOCD.
+- [ ] Restrict access to ST-LINK, OpenOCD, release packages, and update
+  commands to authorized accounts or a narrowly scoped update service; do not
+  grant the runtime gateway service unnecessary flashing privileges.
+- [ ] Harden the Pi update path: protect the verifier and trusted public key
+  from unauthorized replacement, authenticate and log update requests, and
+  assess secure/verified boot and recovery options supported by the exact Pi
+  hardware and boot configuration.
+- [ ] Document the remaining Pi administrator and physical-access bypasses,
+  and define what additional controls are required for the product's threat
+  model.
+
+The current release tool signs a fixed-header `.sfu` package using Ed25519 and
+BLAKE2b-256 rather than a separate canonical SHA-256 manifest. The package
+does bind the board ID, version, image length, and digest, and the Pi wrapper
+verifies it before flashing. The manifest/hash-format items above remain
+unchecked until the documented format and implementation are aligned.
+
+#### Phase 2: STM32 Boot-Time Firmware Enforcement
+
+**Why:** Host-side checks cannot stop a directly programmed unauthorized
+application. A device-side bootloader makes the STM32 verify the application
+before execution, independently of whether the Pi wrapper was used.
+
+- [x] Define a flash layout that reserves space for a first-stage bootloader
+  and places the application at a non-zero flash address.
+- [x] Select and integrate a maintained signature-verification implementation
+  that fits STM32F446RE flash/RAM limits; embed only the public key in the
   bootloader.
+- [x] Verify application board ID, image length, digest, and signature before
+  jumping to the application; fail closed on invalid images.
+- [x] Update linker and OpenOCD programming addresses. Keep ST-LINK/OpenOCD for
+  routine programming, but make the bootloader reject unauthorized images even
+  when they are written directly.
+- [ ] Decide how version rollback is prevented, how signing keys are rotated
+  or revoked, and how failed updates are recovered. The signed version field
+  is currently recorded but no anti-rollback state is enforced.
 
-This is an engineering implementation, not a CRA conformity assessment or a
-claim of production secure boot. The single-slot design has no automatic
-rollback: an interrupted or bad application update requires recovery by
-reprogramming a known-good signed package over ST-LINK/OpenOCD. The separate
-bootloader region is not currently write-protected.
+The bootloader region is reserved by the flash layout but is not hardware
+write-protected. Bench testing has covered valid signed-image boot, rejection
+of a directly programmed payload-tampered image, and ST-LINK recovery on a
+NUCLEO-F446RE. See
+[Bench Test: STM32 Boot-Time Signature Enforcement](#bench-test-stm32-boot-time-signature-enforcement).
+
+#### Phase 3: Production Hardware and Trust Protection
+
+**Why:** Application signature checks depend on the bootloader and its
+verification key remaining trustworthy. Exposed debug/programming access or
+replaceable trust anchors can undermine that boundary. Protection settings
+also affect manufacturing, development, field service, and recovery, so they
+must be designed and tested before production.
+
+- [ ] Assess STM32 readout/debug protection and its impact on development,
+  manufacturing, field service, and recovery before enabling any option bytes.
+- [ ] Define and test a production policy for SWD/JTAG, UART boot paths, unused
+  debug interfaces, and physical access; disable or restrict interfaces that
+  are not needed in shipped units.
+- [ ] Decide whether the product threat model requires hardware-backed secret
+  storage (for example, a secure element); document the choice and its
+  manufacturing and recovery implications. The STM32 bootloader currently
+  contains a public verification key, not a private signing key.
+- [ ] Inventory credentials and cryptographic assets; ensure there are no
+  universal default passwords or shared device secrets, and define provisioning,
+  storage, rotation, and revocation for any secrets that are required.
+
+#### Phase 4: Communications and Data Protection
+
+**Why:** Integrity checks such as the telemetry CRC detect transmission errors,
+not malicious modification or eavesdropping. The right protection depends on
+whether a link crosses an untrusted boundary and whether its data or commands
+need confidentiality, integrity, or peer authentication.
+
+- [ ] Inventory communication links and data handled by the product; document
+  confidentiality, integrity, and authentication needs for each link.
+- [ ] For links exposed to untrusted networks or carrying sensitive data or
+  security-relevant commands, select and implement suitable authenticated
+  protection, including secure key provisioning and rotation.
+- [ ] Document the risk decision for local STM32-to-Pi UART telemetry. The
+  current COBS/CRC protocol provides framing and error detection, not
+  cryptographic confidentiality or authenticity.
+- [ ] Minimize collected/stored data and protect any sensitive data at rest
+  using controls supported by the hardware and product threat model.
+
+#### Phase 5: Vulnerability Handling and Security Support
+
+**Why:** Secure design cannot prevent every future vulnerability. A maintained
+product needs a way to receive reports, assess affected components, issue
+security fixes, and tell users how long support will continue.
+
+- [ ] Define and publish a product security support period based on expected
+  product use and applicable CRA requirements. The CRA generally sets a
+  five-year minimum unless the product's expected use period is shorter; confirm
+  the rule applicable to this product and provide security updates throughout
+  the declared period.
+- [ ] Establish a vulnerability intake and response process, including a
+  security contact, triage, severity assessment, remediation targets, and
+  coordinated disclosure.
+- [ ] Maintain an inventory of firmware, Yocto, gateway, and third-party
+  components with versions and a process to monitor advisories and assess
+  vulnerabilities.
+- [ ] Define how security updates are built, signed, delivered, documented,
+  and made available to users without charge during the applicable support
+  period.
+
+#### Phase 6: Security Verification and Release Evidence
+
+**Why:** Tests demonstrate that controls work in failure cases, while retained
+design and release evidence supports maintenance, incident response, and any
+applicable conformity assessment.
+
+- [ ] Test accepted and rejected firmware cases: valid image, unsigned image,
+  modified image, wrong-board image, interrupted programming, and older signed
+  image.
+- [ ] Test that unauthorized Pi users cannot invoke the update path, replace
+  trusted verification material, or program the target through available
+  interfaces; explicitly test and document administrator/physical-access
+  boundaries.
+- [ ] Verify production debug-interface settings, credential provisioning,
+  update recovery, and communications protections on representative hardware.
+- [ ] Keep the threat model, security decisions, test results, component
+  inventory, update/recovery instructions, and release records together for
+  engineering and conformity-readiness review.
+
+### Outcome After All Phases
+
+Completing and verifying these phases should provide a documented security
+lifecycle: authorized releases are checked on the Pi and independently enforced
+by the STM32 at boot; routine Pi flashing is restricted and auditable; production
+interfaces and trust anchors have an assessed protection policy; sensitive
+communications and data receive proportionate safeguards; and vulnerabilities
+can be handled with security updates throughout a published support period.
+This materially reduces risks from accidental or unauthorized updates and
+common software attacks, but does not make the product invulnerable or prevent
+every attack by a compromised administrator or person with physical access.
+The result is engineering evidence toward CRA readiness, not automatic legal
+compliance or product certification.
 
 ### Production Firmware Release Bundle
 
