@@ -43,16 +43,15 @@ include_directories(
     ${CMAKE_CURRENT_SOURCE_DIR}/inc
 )
 
-file(GLOB_RECURSE GATEWAYD_SOURCES
-    "${CMAKE_CURRENT_SOURCE_DIR}/src/*.cpp"
-    "${CMAKE_CURRENT_SOURCE_DIR}/src/*.c"
-)
+add_library(gateway_protocol src/frame_protocol.cpp)
+target_include_directories(gateway_protocol PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/inc)
 
-add_executable(${PROJECT_NAME} ${GATEWAYD_SOURCES})
+add_executable(${PROJECT_NAME} src/main.cpp)
 
 target_link_libraries(${PROJECT_NAME}
     PRIVATE
         Threads::Threads
+        gateway_protocol
 )
 
 target_include_directories(${PROJECT_NAME}
@@ -68,3 +67,10 @@ include(GNUInstallDirs)
 install(TARGETS ${PROJECT_NAME}
     RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR}
 )
+
+include(CTest)
+if(BUILD_TESTING)
+    add_executable(gateway_protocol_tests tests/frame_protocol_test.cpp)
+    target_link_libraries(gateway_protocol_tests PRIVATE gateway_protocol)
+    add_test(NAME gateway_protocol_tests COMMAND gateway_protocol_tests)
+endif()

@@ -41,5 +41,6 @@ stm32-firmware/build/
 **/conf/bblayers.conf
 .vscode/
 .idea/
+.venv/
 .DS_Store
 Thumbs.db

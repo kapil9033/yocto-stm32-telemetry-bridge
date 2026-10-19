@@ -22,6 +22,11 @@ between the target and host.
   - [Telemetry Payload](#telemetry-payload)
 - [Software Components](#software-components)
 - [Building the STM32 Firmware](#building-the-stm32-firmware)
+- [Testing Strategy](#testing-strategy)
+  - [Test Levels](#test-levels)
+  - [Recommended Repository Layout](#recommended-repository-layout)
+  - [Test Execution and CI](#test-execution-and-ci)
+  - [Testing Rollout Plan](#testing-rollout-plan)
 - [EU Cyber Resilience Act (CRA) Readiness](#eu-cyber-resilience-act-cra-readiness)
   - [Phased Security Checklist](#phased-security-checklist)
     - [Phase 0: Product Scope and Threat Model](#phase-0-product-scope-and-threat-model)
@@ -824,6 +829,147 @@ journalctl -u gatewayd -b --no-pager -n 50
 The service and journal commands apply to images that include `gatewayd` and
 systemd. The serial device appearing confirms USB enumeration only; valid COBS
 frames must still be captured and decoded to confirm end-to-end telemetry.
+
+## Testing Strategy
+
+Use **pytest as the top-level runner for Python tests and host-side scenarios**,
+while keeping C and C++ unit tests in native CTest targets. This provides one
+convenient command for host checks without forcing embedded or gateway code into
+a Python-only testing model. Pytest can also coordinate target and hardware
+tests, but those should require explicit selection because they need deployed
+devices or a dedicated bench.
+
+The repository currently has no checked-in test suite or CTest targets. The
+layout and commands below describe the recommended architecture; they become
+available as their corresponding milestones are implemented.
+
+### Test Levels
+
+| Level | What it verifies here | Representative cases | Typical runner |
+| --- | --- | --- | --- |
+| **Unit** | A function or module in isolation | `secure_firmware.py` package parsing, signing and verification; firmware CRC/COBS; gateway frame validation and payload decoding; bootloader package checks | pytest for Python; CTest for C/C++ |
+| **Integration** | Components working across an interface on the host | Firmware-compatible frame bytes accepted by the gateway; gateway consumes serial input from a pseudo-terminal (PTY); partial reads, multiple frames, malformed-frame recovery | pytest orchestrating host binaries and PTYs, plus native protocol tests |
+| **System** | The deployed Yocto image and services | `gatewayd` starts under systemd, opens the configured serial device, logs valid telemetry, and recovers after disconnect/reconnect | pytest over SSH or a target test interface |
+| **HIL** | Firmware, gateway and real hardware together | Board startup and telemetry cadence; sensor success/error paths; button response; reset recovery; secure boot accepts valid packages and rejects tampered or wrong-board packages | pytest coordinating a dedicated bench |
+
+These levels answer different questions. Host integration cannot prove
+electrical behavior or sensor accuracy, and a successful firmware cross-build
+cannot prove that the image works on a Raspberry Pi.
+
+### Recommended Repository Layout
+
+```text
+tests/
+  conftest.py                 # Shared fixtures and opt-in target/bench setup
+  pytest.ini                  # Markers and default selection
+  fixtures/
+    protocol_vectors.json     # Independently specified wire-format examples
+  unit/
+    python/test_secure_firmware.py
+  integration/
+    test_gateway_serial.py
+  system/
+    test_gateway_service.py
+  hil/
+    test_stm32_telemetry.py
+
+gatewayd/
+  tests/                      # Host C++ tests registered with CTest
+
+stm32-firmware/
+  tests/                      # Native C tests for portable firmware modules
+```
+
+Keep protocol vectors language-neutral and specify expected bytes, CRC values,
+payload fields, and edge cases. Avoid relying only on an encoder/decoder
+round-trip from the same implementation: matching defects can cancel each
+other out. Use independent expected vectors in firmware, gateway, and
+Python-facing tests.
+
+To make this architecture practical, first separate portable logic from
+hardware and process entry points:
+
+- Extract gateway COBS decoding, CRC checking, frame validation, and telemetry
+  decoding from `gatewayd/src/main.cpp` into a host-buildable module. Keep serial
+  I/O and logging in the daemon layer.
+- Add a serial-device configuration option to `gatewayd` (using the current
+  device as the deployment default) so a PTY can be injected during host tests.
+- Keep firmware protocol and package-verification code callable without HAL,
+  flash, or bootloader startup dependencies where practical; compile native
+  tests separately from ARM firmware targets.
+- Use temporary directories and generated test signing keys for package tests.
+  Never check a release private key into the repository or CI artifacts.
+
+### Test Execution and CI
+
+Register pytest markers for `unit`, `integration`, `system`, `hil`, and, if
+needed, `destructive`. Default local and pull-request runs should include only
+host-safe unit and integration coverage. Require explicit marker selection and
+a bench/target configuration for system and HIL tests. Destructive flash,
+erase, or recovery checks belong only on an identified bench device.
+
+Use a project-local virtual environment for pytest so this repository's Python
+tools stay separate from the system Python and other projects. Create it and
+install the test dependency once:
+
+```sh
+python3 -m venv .venv
+.venv/bin/python -m pip install -r requirements-dev.txt
+```
+
+The test runner automatically uses `.venv/bin/python` when it exists; it falls
+back to `python3` otherwise. Run the suite from the repository root:
+
+```sh
+./run_host_tests.sh
+```
+
+The system test is skipped unless `YOCTO_SSH_HOST` is set to an SSH target
+where the test account can run `systemctl`, read the journal, and inspect
+`/dev/ttyACM0`. For example: `YOCTO_SSH_HOST=pi@raspberrypi`. To build the
+gateway separately, the integration test accepts `GATEWAYD_BIN=/path/to/gatewayd`.
+HIL tests are added alongside an identified bench fixture; they are not part of
+the host runner until that fixture is available.
+
+CI should initially run pytest host tests, both native CTest suites, and the
+firmware cross-build. Run Yocto image builds on suitable runners because they
+are resource-intensive; run system and HIL suites on dedicated self-hosted
+hardware or an explicitly triggered bench job. Preserve logs, test reports,
+firmware/package hashes, and target identity as artifacts, excluding signing
+secrets.
+
+### Testing Rollout Plan
+
+1. **Lock down contracts:** document frame and payload layout, byte order,
+   CRC-16/MODBUS parameters, timestamp meaning, startup-marker handling, and
+   expected telemetry cadence. Resolve the mismatch between the README's Unix
+   timestamp description and the current RTC implementation before asserting
+   timestamp semantics.
+2. **Start with Python unit tests:** cover package creation, inspection, and
+   verification, including malformed headers, board mismatches, image-size
+   boundaries, changed payloads, invalid signatures, and missing OpenSSL.
+3. **Add native portable-code tests:** test firmware CRC/COBS and package
+   verification, plus gateway frame validation. Include known CRC vectors,
+   zero-heavy inputs, truncation, length errors, CRC failures, capacity limits,
+   and recovery at a delimiter.
+4. **Add PTY integration coverage:** exercise the gateway with partial reads,
+   concatenated frames, invalid input followed by a valid frame, and
+   disconnect/reconnect. Specify expected handling for the firmware's current
+   `STM32 UART READY` text marker, which is not a COBS frame.
+5. **Add target system checks:** verify the Yocto image, systemd behavior,
+   serial access, journal output, and bounded reconnect behavior on the Pi.
+6. **Add bench HIL checks:** measure board startup and telemetry, exercise
+   sensor error paths and reset recovery, and test secure-boot acceptance and
+   rejection using controlled packages.
+
+Two repository questions should be settled in the first milestone. The README
+documents the RTC value as a Unix timestamp, but the current
+`DS3231_Read_Timestamp` implementation appears to derive seconds from the
+time-of-day fields only. Also, `linux-gateway/src/gateway_receiver.c` appears
+to be a separate stub with a different CRC formulation from `gatewayd`; decide
+whether it is supported or legacy before treating it as a second implementation
+under test. Test vectors and coverage should follow the intended production
+path.
 
 ## EU Cyber Resilience Act (CRA) Readiness
 

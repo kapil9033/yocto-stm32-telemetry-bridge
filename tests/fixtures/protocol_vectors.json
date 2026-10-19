@@ -1,0 +1,18 @@
+{
+  "crc16_modbus_check": {
+    "input_ascii": "123456789",
+    "crc": "0x4B37"
+  },
+  "telemetry_frame": {
+    "message_type": 1,
+    "payload_length": 15,
+    "timestamp_sec": 1700000123,
+    "accel_x_mg": 100,
+    "accel_y_mg": 100,
+    "accel_z_mg": 100,
+    "light_lux_raw": 1234,
+    "temperature_c": 22,
+    "humidity_pct": 45,
+    "button_state": 1
+  }
+}
