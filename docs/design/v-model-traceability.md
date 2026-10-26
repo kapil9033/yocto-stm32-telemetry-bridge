@@ -60,6 +60,9 @@ and recorded target/HIL results.
 | SEC-02 | NEED-02 | The host package tool shall reject malformed or tampered packages and support creation/inspection using the expected board and key inputs. | Detailed design: secure boot and package tools | `stm32-firmware/tools/secure_firmware.py` | `tests/unit/stm32-firmware/tools/test_secure_firmware.py`, including tamper rejection and parser boundary cases | Python unit evidence exists. Validate packaged release workflow and signing-key custody separately. |
 | SEC-03 | NEED-02 | The flashing script shall validate arguments/files and verify a signed package before programming the target. | Detailed design: secure boot and package tools | `stm32-firmware/tools/flash_signed_stm32.sh` | `tests/unit/stm32-firmware/tools/test_flash_signed_stm32.py::test_flash_script_verifies_before_programming` and other argument/path cases | Script behavior is unit tested with a fake programmer. Successful programming and recovery are destructive bench tests and are not covered by the host suite. |
 | SWR-01 | SYS-01, SYS-02 | When a sensor read fails, telemetry shall continue using the defined fallback/sentinel representation rather than silently interpreting the read as valid. | Detailed design: sensor acquisition and concurrency/error behavior | `sensors_driver.c`, `telemetry_task.c` | `tests/unit/stm32-firmware/Core/Src/sensors_driver_test.c`; `tests/system/test_gateway_service.py::test_yocto_gateway_journal_contains_decoded_telemetry` | Partial host coverage exists. Explicitly test every sentinel/fallback over UART on target and finalize the timestamp contract. |
+| SYS-07 | NEED-01 | During a physical observation, each telemetry record shall contain parseable acceleration, ADC, button, and DHT11 value or explicit DHT11 error fields within their wire representation ranges. | Architecture: runtime data flow; detailed design: sensor acquisition and frame output | `stm32-firmware/Core/Src/telemetry_task.c`, `gatewayd/src/main.cpp` | `tests/hil/test_gateway_reliability.py::test_hil_telemetry_continuity_rate_and_service_stability` | HIL checks field presence and representable/range constraints over real hardware. It does not establish sensor calibration or accuracy. |
+| PERF-01 | NEED-01 | Over a 60-second observation, decoded telemetry shall average at least 0.8 frames/s and no adjacent frame gap shall exceed 3 seconds; record gateway CPU and memory observations. | Architecture: nominal 1 Hz telemetry flow; detailed design: periodic sampling, gateway serial loop, and HIL screening | `stm32-firmware/Core/Src/telemetry_task.c`, `gatewayd/src/main.cpp` | `tests/hil/test_gateway_reliability.py::test_hil_telemetry_continuity_rate_and_service_stability` | Provisional rate/gap thresholds used for this bench run; CPU and memory are informational until budgets are approved. |
+| REL-01 | NEED-01 | During the observation window, `gatewayd` shall remain active and its systemd restart count shall not increase. | Architecture: Pi gateway deployment; detailed design: process and service behavior | `gatewayd/src/main.cpp`, `meta-telemetry-bridge/recipes-apps/gatewayd/files/gatewayd.service` | `tests/hil/test_gateway_reliability.py::test_hil_telemetry_continuity_rate_and_service_stability` | HIL check covers a short screening window. Add longer soak, power-cycle, and physical disconnect/recovery campaigns before release. |
 
 ## Verification-level cross-reference
 
@@ -68,12 +71,12 @@ and recorded target/HIL results.
 | Unit | `tests/unit/`; run with `./run_host_tests.sh` | Isolated parser, protocol, package-verifier, sensor-driver, and script behavior for tested inputs. | Real hardware timing, electrical behavior, service deployment, or whole-system compatibility. |
 | Integration | `tests/integration/test_gateway_serial.py` with host `gatewayd` and PTYs | Serial byte stream handling, framing, malformed/oversized recovery, message filtering, and initial device retry. | Actual Pi USB enumeration or STM32 sensor/UART output. |
 | System | `tests/system/test_gateway_service.py` with `YOCTO_SSH_HOST` | Deployed service state/configuration, serial node presence, and journal output on the selected image. | Sensor calibration or behavior under physical disconnect/EMI unless the test setup explicitly exercises it. |
-| HIL | `tests/hil/` planned; no current bench suite | End-to-end firmware, gateway, and physical sensor/board behavior when implemented on identified hardware. | Broader reliability or production acceptance without defined campaigns and recorded evidence. |
+| HIL | `tests/hil/test_gateway_reliability.py`; run through `./run_host_tests.sh` with `YOCTO_SSH_HOST` set | Real Pi/STM32 telemetry field presence, observed frame rate/gaps, and gateway service restart stability during the configured capture. | Sensor accuracy/calibration, UART electrical margins, reset/power-cycle recovery, and long-term reliability. |
 
-`./run_host_tests.sh` includes unit, integration, and system pytest markers in
-one pytest run, then runs native CTest targets and creates coverage artifacts.
-System cases skip when `YOCTO_SSH_HOST` is absent. Skips are not passed results;
-reports should retain each case's result and reason.
+`./run_host_tests.sh` includes unit, integration, system, and HIL pytest markers
+in one pytest run, then runs native CTest targets and creates coverage artifacts.
+System and HIL cases skip when `YOCTO_SSH_HOST` is absent. Skips are not passed
+results; reports should retain each case's result and reason.
 
 ## Open traceability actions
 
@@ -82,8 +85,8 @@ reports should retain each case's result and reason.
    behavior when the serial link drops after connection, and data retention/API.
 3. Decide whether `linux-gateway/src/gateway_receiver.c` is supported software
    or legacy code. If supported, add architecture and test links for it.
-4. Add identified HIL procedures and map their recorded results to SYS-01,
-   SYS-02, SEC-01, and SWR-01.
+4. Extend identified HIL procedures and map recorded results to SYS-01,
+   SYS-02, SEC-01, SWR-01, SYS-07, PERF-01, and REL-01.
 5. At release, record the tested firmware/image commit, board identity,
    configuration, test report, and any approved deviations.
 

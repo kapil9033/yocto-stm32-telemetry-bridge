@@ -13,19 +13,25 @@ coverage_root="$repo_dir/build/coverage"
 mkdir -p "$coverage_root"
 python_results="$coverage_root/python-results.xml"
 python_log="$coverage_root/python-tests.log"
-if "$test_python" -m pytest -m "unit or integration or system" \
+pytest_status=0
+if "$test_python" -m pytest -m "unit or integration or system or hil" \
     --junitxml="$python_results" >"$python_log" 2>&1; then
     cat "$python_log"
 else
+    pytest_status=$?
     cat "$python_log"
-    exit 1
 fi
 
 coverage_build="$repo_dir/build/unit-mcdc-coverage"
 cmake -S "$repo_dir/tests/unit" -B "$coverage_build" -DENABLE_MCDC_COVERAGE=ON
 cmake --build "$coverage_build"
-ctest --test-dir "$coverage_build" --output-on-failure \
-    --output-log "$coverage_root/native-tests.log"
+native_status=0
+if ctest --test-dir "$coverage_build" --output-on-failure \
+    --output-log "$coverage_root/native-tests.log"; then
+    :
+else
+    native_status=$?
+fi
 
 if ! command -v gcov >/dev/null 2>&1; then
     printf 'ERROR: gcov is required to report native MC/DC coverage.\n' >&2
@@ -66,3 +72,7 @@ done
     --coverage-summary "$coverage_summary" \
     --output "$coverage_root/index.html"
 printf '\nGraphical coverage report: %s\n' "$coverage_root/index.html"
+
+if [ "$pytest_status" -ne 0 ] || [ "$native_status" -ne 0 ]; then
+    exit 1
+fi

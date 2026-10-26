@@ -888,8 +888,8 @@ these suites and collects native line, branch, and masking MC/DC coverage.
 | --- | --- | --- | --- |
 | **Unit** | A function or module in isolation | `secure_firmware.py` package parsing, signing and verification; firmware CRC/COBS; gateway frame validation and payload decoding; bootloader package checks | pytest for Python; CTest for C/C++ |
 | **Integration** | Components working across an interface on the host | Firmware-compatible frame bytes accepted by the gateway; gateway consumes serial input from a pseudo-terminal (PTY); partial reads, multiple frames, malformed-frame recovery | pytest orchestrating host binaries and PTYs, plus native protocol tests |
-| **System** | The deployed Yocto image and services | `gatewayd` starts under systemd, opens the configured serial device, logs valid telemetry, and recovers after disconnect/reconnect | pytest over SSH or a target test interface |
-| **HIL** | Firmware, gateway and real hardware together | Board startup and telemetry cadence; sensor success/error paths; button response; reset recovery; secure boot accepts valid packages and rejects tampered or wrong-board packages | pytest coordinating a dedicated bench |
+| **System** | The deployed Yocto image and services | `gatewayd` is active, the configured serial device is present, telemetry reaches the journal, and the service restart policy is configured | pytest over SSH or a target test interface |
+| **HIL** | Firmware, gateway and real hardware together | Telemetry field validity/rate/gaps and gateway service stability on the connected Pi/STM32; later add sensor fault, reset, disconnect, and secure-boot bench procedures | pytest over SSH to an identified bench |
 
 These levels answer different questions. Host integration cannot prove
 electrical behavior or sensor accuracy, and a successful firmware cross-build
@@ -911,7 +911,7 @@ tests/
   system/
     test_gateway_service.py
   hil/
-    test_stm32_telemetry.py
+    test_gateway_reliability.py
 
 build/coverage/                # Generated reports; ignored by Git
   index.html
@@ -940,10 +940,11 @@ hardware and process entry points:
 ### Test Execution and CI
 
 Register pytest markers for `unit`, `integration`, `system`, `hil`, and, if
-needed, `destructive`. Default local and pull-request runs should include only
-host-safe unit and integration coverage. Require explicit marker selection and
-a bench/target configuration for system and HIL tests. Destructive flash,
-erase, or recovery checks belong only on an identified bench device.
+needed, `destructive`. `run_host_tests.sh` includes the unit, integration,
+system, and HIL markers. System and HIL cases skip with a reason when
+`YOCTO_SSH_HOST` is not set; when it is set they run against that target.
+Destructive flash, erase, or recovery checks are not included in this runner
+and belong only on an identified bench device.
 
 Use a project-local virtual environment for pytest so this repository's Python
 tools stay separate from the system Python and other projects. Create it and
@@ -963,18 +964,19 @@ back to `python3` otherwise. Run the suite from the repository root:
 
 ### Coverage Report
 
-The host test runner creates a graphical report after the tests pass. Open
-`build/coverage/index.html` in a browser to see the results. Its summary shows
-the total number of pytest cases followed by unit, integration, system, and
-native pass counts. The total pytest count combines the three Python test
-levels; it does not mean there is a separate suite named “Python tests.” The
+The host test runner creates a graphical report after the suites complete, even
+when a test fails. Open `build/coverage/index.html` in a browser to see the
+results. Its summary shows the total pytest count followed by unit, integration,
+system, HIL, and native pass counts. The pytest total combines the Python unit,
+integration, system, and HIL categories; it does not mean there is a separate
+suite named “Python tests.” The
 native count appears last because `run_host_tests.sh` runs pytest first and
 native CTest targets afterward. There is no separate skipped-count card; any
 skipped cases are marked in their individual test rows. The report also shows
 line, branch, and masking MC/DC percentages for each instrumented native source
-file, grouped by its native test step, and lists individual pytest results and
-durations. Python and shell source coverage are not measured by this GCC-based
-report.
+file, grouped by its native test step, and lists individual pytest results,
+durations, and HIL measurements. Python and shell source coverage are not
+measured by this GCC-based report.
 
 The same directory contains `python-results.xml`, `python-tests.log`, and
 `native-tests.log`. The detailed native `gcov` files and `summary.txt` are under
@@ -983,14 +985,33 @@ are excluded from Git by the existing `build/` ignore rule.
 
 Native MC/DC instrumentation requires GCC 14 or newer and its matching `gcov`.
 The report is generated by rerunning `./run_host_tests.sh`; no separate report
-command is needed.
+command is needed. HIL observations are included when `YOCTO_SSH_HOST` is
+configured; the report shows both their outcome and measured properties.
 
-The system test is skipped unless `YOCTO_SSH_HOST` is set to an SSH target
-where the test account can run `systemctl`, read the journal, and inspect
-`/dev/ttyACM0`. For example: `YOCTO_SSH_HOST=pi@raspberrypi`. To build the
-gateway separately, the integration test accepts `GATEWAYD_BIN=/path/to/gatewayd`.
-HIL tests are added alongside an identified bench fixture; they are not part of
-the host runner until that fixture is available.
+System and HIL tests use `YOCTO_SSH_HOST` for an SSH target where the account
+can run `systemctl` and read the journal; system tests also inspect the serial
+device (default `/dev/ttyACM0`). The current HIL check is non-destructive: it
+observes real gateway telemetry, validates reported fields and broad wire
+ranges, measures frame rate and largest gap, checks that the service did not
+restart during capture, and records process CPU/RSS observations. It does not
+flash, reset, or reconfigure hardware.
+
+Run the complete suite against a connected Pi/STM32 like this:
+
+```sh
+YOCTO_SSH_HOST=root@raspberrypi YOCTO_HIL_DURATION_SEC=60 ./run_host_tests.sh
+```
+
+The HIL screening defaults are 0.8 telemetry frames/second minimum and a 3
+second maximum adjacent-frame gap. `YOCTO_HIL_MIN_RATE_HZ` and
+`YOCTO_HIL_MAX_GAP_SECONDS` override them. These are provisional screening
+limits, not approved product performance requirements. The run report lists
+the observed duration, frame count, rate, longest gap, CPU usage, RSS, service
+restart count, and result alongside unit, integration, system, and native
+tests. Without a target configured, the HIL row appears as skipped in the
+report. To build the
+gateway separately, the integration test accepts
+`GATEWAYD_BIN=/path/to/gatewayd`.
 
 CI should initially run pytest host tests, both native CTest suites, and the
 firmware cross-build. Run Yocto image builds on suitable runners because they
@@ -1022,9 +1043,10 @@ secrets.
    its restart policy is configured, the serial device is present, and decoded
    telemetry reaches the journal. These checks require a configured Pi and
    attached STM32.
-6. **Add bench HIL checks:** measure board startup and telemetry, exercise
-   sensor error paths and reset recovery, and test secure-boot acceptance and
-   rejection using controlled packages.
+6. **Extend bench HIL checks:** the initial physical telemetry continuity and
+   service-stability check is implemented. Add measured board startup, sensor
+   accuracy and fault injection, reset/power-cycle recovery, UART disconnect
+   recovery, and secure-boot acceptance/rejection using controlled packages.
 
 Two repository questions should be settled in the first milestone. The README
 documents the RTC value as a Unix timestamp, but the current

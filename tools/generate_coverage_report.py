@@ -22,17 +22,33 @@ def read_python_results(path):
     for case in root.iter("testcase"):
         skipped_node = case.find("skipped")
         skipped = skipped_node is not None
-        failed = case.find("failure") is not None or case.find("error") is not None
+        outcome_node = case.find("failure")
+        if outcome_node is None:
+            outcome_node = case.find("error")
+        failed = outcome_node is not None
         status = "Skipped" if skipped else "Failed" if failed else "Passed"
+        properties = case.find("properties")
+        property_details = []
+        if properties is not None:
+            property_details = [
+                f"{property_node.get('name', 'result')}: {property_node.get('value', '')}"
+                for property_node in properties.findall("property")
+            ]
+        details = list(property_details)
+        if outcome_node is not None:
+            message = outcome_node.get("message", "").strip()
+            if message:
+                details.append(f"Failure: {message}")
+        if skipped_node is not None:
+            skip_message = (skipped_node.get("message") or skipped_node.text or "").strip()
+            if skip_message:
+                details.append(skip_message)
         cases.append({
             "suite": case.get("classname", "Python"),
             "name": case.get("name", "unnamed test"),
             "status": status,
             "time": float(case.get("time", "0") or 0),
-            "detail": (
-                (skipped_node.get("message") or skipped_node.text or "").strip()
-                if skipped_node is not None else ""
-            ),
+            "detail": "; ".join(details),
         })
     return cases
 
@@ -119,10 +135,10 @@ def render(args):
             "</tr>"
         )
 
-    python_groups = {"Unit": [], "Integration": [], "System": []}
+    python_groups = {"Unit": [], "Integration": [], "System": [], "HIL": []}
     for case in python_cases:
         level = next(
-            (name for name in ("Integration", "System") if f".{name.lower()}." in f".{case['suite']}."),
+            (name for name in ("Integration", "System", "HIL") if f".{name.lower()}." in f".{case['suite']}."),
             "Unit",
         )
         python_groups[level].append(case)
@@ -150,7 +166,7 @@ def render(args):
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>Host Test Coverage Report</title>
+  <title>Test Results and Coverage Report</title>
   <style>
     :root {{ color-scheme: light; font: 15px/1.5 system-ui, sans-serif; color: #18212b; background: #f3f6f9; }}
     body {{ margin: 0; }}
@@ -178,13 +194,14 @@ def render(args):
   </style>
 </head>
 <body><main>
-  <h1>Host Test Coverage</h1>
-  <p>Coverage and test outcomes collected by <code>run_host_tests.sh</code>.</p>
+  <h1>Test Results and Coverage</h1>
+  <p>Test outcomes and native source coverage collected by <code>run_host_tests.sh</code>.</p>
   <section class="cards" aria-label="Test totals">
-    <div class="card"><strong>{len(python_cases)}</strong><span>pytest cases (Python)</span></div>
+    <div class="card"><strong>{len(python_cases)}</strong><span>pytest cases</span></div>
     <div class="card"><strong>{group_count('Unit', 'Passed')}/{len(python_groups['Unit'])}</strong><span>Unit tests passed</span></div>
     <div class="card"><strong>{group_count('Integration', 'Passed')}/{len(python_groups['Integration'])}</strong><span>Integration tests passed</span></div>
     <div class="card"><strong>{group_count('System', 'Passed')}/{len(python_groups['System'])}</strong><span>System tests passed</span></div>
+    <div class="card"><strong>{group_count('HIL', 'Passed')}/{len(python_groups['HIL'])}</strong><span>Hardware tests passed</span></div>
     <div class="card"><strong>{native_counts['Passed']}/{len(native_cases)}</strong><span>Native tests passed</span></div>
   </section>
 
@@ -213,7 +230,13 @@ def render(args):
     <tbody>{python_table_rows(python_groups['System'])}</tbody>
   </table></div>
 
-  <footer>Raw native summary: <a href="{summary_link}">summary.txt</a></footer>
+  <h2>Hardware-in-the-loop and reliability tests (pytest)</h2>
+  <div class="table-wrap"><table>
+    <thead><tr><th>Test case</th><th>Result</th><th>Duration</th><th>Measured results / skip reason</th></tr></thead>
+    <tbody>{python_table_rows(python_groups['HIL'])}</tbody>
+  </table></div>
+
+  <footer><a href="../../docs/design/index.html">Architecture and requirement traceability</a> · Raw native summary: <a href="{summary_link}">summary.txt</a></footer>
 </main></body></html>
 """
     args.output.parent.mkdir(parents=True, exist_ok=True)

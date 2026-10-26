@@ -160,6 +160,21 @@ build input and exported into a generated header.
 - systemd restarts the daemon if it exits; the daemon itself is an infinite
   process during normal operation.
 
+### Hardware reliability/performance screening
+
+`tests/hil/test_gateway_reliability.py` observes the deployed gateway journal
+over SSH for 60 seconds by default. It groups real telemetry log records,
+checks acceleration/ADC/button/DHT fields and broad representable ranges,
+calculates observed frame rate and largest inter-frame gap, and compares the
+gateway's systemd restart count before and after capture. It also records
+average CPU time as a percentage of one core and process RSS at the start/end
+plus process high-water RSS. Resource values are observational until product
+budgets are approved. The initial screening thresholds are 0.8 frames/second
+minimum and a 3 second maximum gap; both are configurable and provisional until
+product-level timing requirements are approved. The check is read-only and does
+not validate sensor calibration, electrical margins, reset behavior, or
+long-term reliability.
+
 ## Related documents
 
 - [System architecture](system-architecture.md)
