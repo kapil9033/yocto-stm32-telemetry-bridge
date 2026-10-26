@@ -19,6 +19,7 @@ static std::vector<uint8_t> cobs(const std::vector<uint8_t> &in) {
 int main() {
     const uint8_t check[] = "123456789";
     assert(gateway::calculate_crc16(check, 9U) == 0x4B37U);
+    assert(gateway::calculate_crc16(check, 0U) == 0xFFFFU);
     std::vector<uint8_t> raw{1U, 3U, 0x10U, 0U, 0x20U};
     const uint16_t crc = gateway::calculate_crc16(raw.data(), raw.size());
     raw.push_back(static_cast<uint8_t>(crc)); raw.push_back(static_cast<uint8_t>(crc >> 8U));
@@ -32,4 +33,23 @@ int main() {
     assert(!gateway::decode_frame(std::vector<uint8_t>{0U}, type, payload));
     std::vector<uint8_t> malformed(261U, 0xFFU), decoded;
     assert(!gateway::cobs_decode(malformed, decoded));
+
+    decoded = {0xAAU};
+    assert(!gateway::cobs_decode(std::vector<uint8_t>{0U}, decoded));
+    assert(decoded.empty());
+    assert(gateway::cobs_decode(std::vector<uint8_t>{2U, 0x11U, 2U, 0x22U}, decoded));
+    assert((decoded == std::vector<uint8_t>{0x11U, 0U, 0x22U}));
+
+    uint8_t message_type = 0U;
+    std::vector<uint8_t> payload_out;
+    assert(!gateway::validate_frame(std::vector<uint8_t>{1U, 0U, 0U}, message_type, payload_out));
+    assert(!gateway::validate_frame(std::vector<uint8_t>{1U, 1U, 0U, 0U}, message_type, payload_out));
+
+    std::vector<uint8_t> empty_payload_frame{7U, 0U};
+    const uint16_t empty_crc = gateway::calculate_crc16(
+        empty_payload_frame.data(), empty_payload_frame.size());
+    empty_payload_frame.push_back(static_cast<uint8_t>(empty_crc));
+    empty_payload_frame.push_back(static_cast<uint8_t>(empty_crc >> 8U));
+    assert(gateway::validate_frame(empty_payload_frame, message_type, payload_out));
+    assert(message_type == 7U && payload_out.empty());
 }

@@ -1,6 +1,0 @@
-cmake_minimum_required(VERSION 3.16)
-project(stm32_protocol_tests C)
-enable_testing()
-add_executable(telemetry_protocol_test telemetry_protocol_test.c ../Core/Src/telemetry_protocol.c)
-target_include_directories(telemetry_protocol_test PRIVATE ../Core/Inc)
-add_test(NAME telemetry_protocol_test COMMAND telemetry_protocol_test)

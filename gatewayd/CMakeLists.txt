@@ -69,8 +69,3 @@ install(TARGETS ${PROJECT_NAME}
 )
 
 include(CTest)
-if(BUILD_TESTING)
-    add_executable(gateway_protocol_tests tests/frame_protocol_test.cpp)
-    target_link_libraries(gateway_protocol_tests PRIVATE gateway_protocol)
-    add_test(NAME gateway_protocol_tests COMMAND gateway_protocol_tests)
-endif()

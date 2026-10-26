@@ -11,10 +11,34 @@ fi
 
 "$test_python" -m pytest -m "unit or integration or system"
 
-cmake -S "$repo_dir/gatewayd" -B "$repo_dir/build/gatewayd-tests" -DBUILD_TESTING=ON
-cmake --build "$repo_dir/build/gatewayd-tests"
-ctest --test-dir "$repo_dir/build/gatewayd-tests" --output-on-failure
+coverage_build="$repo_dir/build/unit-mcdc-coverage"
+cmake -S "$repo_dir/tests/unit" -B "$coverage_build" -DENABLE_MCDC_COVERAGE=ON
+cmake --build "$coverage_build"
+ctest --test-dir "$coverage_build" --output-on-failure
 
-cmake -S "$repo_dir/stm32-firmware/tests" -B "$repo_dir/build/firmware-native-tests"
-cmake --build "$repo_dir/build/firmware-native-tests"
-ctest --test-dir "$repo_dir/build/firmware-native-tests" --output-on-failure
+if ! command -v gcov >/dev/null 2>&1; then
+    printf 'ERROR: gcov is required to report native MC/DC coverage.\n' >&2
+    exit 1
+fi
+
+coverage_report="$coverage_build/gcov-report"
+mkdir -p "$coverage_report"
+printf '\nNative per-file coverage (line, branch, and masking MC/DC):\n'
+find "$coverage_build/CMakeFiles" -type f -name '*.gcno' -print | sort | while IFS= read -r notes_file; do
+    notes_name=${notes_file##*/}
+    case "$notes_name" in
+        *_test.*.gcno) continue ;;
+    esac
+    gcov_output=$(cd "$coverage_report" && gcov --conditions --branch-probabilities "$notes_file")
+    printf '%s\n' "$gcov_output" | awk -v root="$repo_dir/" '
+        /^File / {
+            current = index($0, root) > 0 && $0 !~ /_test[.]/
+            if (current) print
+            next
+        }
+        /^Creating / { current = 0; next }
+        /^(Lines executed:|Branches executed:|Taken at least once:|Condition outcomes covered:)/ {
+            if (current) print
+        }
+    '
+done
