@@ -12,6 +12,8 @@ between the target and host.
 - [Initial Project Scope](#initial-project-scope)
 - [Project Overview](#project-overview)
 - [System Architecture](#system-architecture)
+  - [Architecture and Design Documents](#architecture-and-design-documents)
+  - [Graphical Design Report](#graphical-design-report)
   - [Implemented Data Flow](#implemented-data-flow)
   - [STM32 Task Structure](#stm32-task-structure)
 - [Hardware](#hardware)
@@ -89,6 +91,42 @@ This project brings those roles together:
   filesystem. It does not carry live STM32 telemetry.
 
 ## System Architecture
+
+### Architecture and Design Documents
+
+The following documents provide the system architecture, software detailed
+design, and bidirectional traceability from V-model needs to implementation and
+verification evidence:
+
+- [System architecture](docs/design/system-architecture.md): system context,
+  deployment, data flow, component boundaries, and external interfaces.
+- [Software detailed design](docs/design/software-detailed-design.md): module
+  responsibilities, runtime behavior, protocol representation, and failure
+  handling.
+- [V-model traceability](docs/design/v-model-traceability.md): requirements to
+  design elements, source files, and tests, with verification gaps called out.
+
+These documents describe the current repository implementation. Requirements
+are an engineering baseline derived from that implementation and should be
+reviewed against product needs before being treated as an approved specification.
+
+### Graphical Design Report
+
+Generate the browser-based architecture and traceability view from the V-model
+matrix:
+
+```sh
+python3 tools/generate_design_report.py
+```
+
+Open `docs/design/index.html` in a browser. The report shows the system data
+path, V-model stages, and a searchable matrix connecting each requirement to
+its parent, design allocation, source files, and verification evidence. Source
+and test paths link back into the repository. The summary counts mapped test
+levels; it does not display test pass/fail results. Edit the Markdown design
+documents and regenerate the report to reflect changes. The generated report
+is checked in beside its Markdown sources, so it remains available without
+running a generator or inspecting ignored `build/` output.
 
 ```text
                    +-----------------------------------+
