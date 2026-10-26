@@ -2,6 +2,7 @@
 set -eu
 
 repo_dir=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
+gcov_tool=${GCOV:-gcov}
 
 if [ -x "$repo_dir/.venv/bin/python" ]; then
     test_python="$repo_dir/.venv/bin/python"
@@ -33,8 +34,8 @@ else
     native_status=$?
 fi
 
-if ! command -v gcov >/dev/null 2>&1; then
-    printf 'ERROR: gcov is required to report native MC/DC coverage.\n' >&2
+if ! command -v "$gcov_tool" >/dev/null 2>&1; then
+    printf 'ERROR: %s is required to report native MC/DC coverage.\n' "$gcov_tool" >&2
     exit 1
 fi
 
@@ -48,7 +49,7 @@ find "$coverage_build/CMakeFiles" -type f -name '*.gcno' -print | sort | while I
     case "$notes_name" in
         *_test.*.gcno) continue ;;
     esac
-    gcov_output=$(cd "$coverage_report" && gcov --conditions --branch-probabilities "$notes_file")
+    gcov_output=$(cd "$coverage_report" && "$gcov_tool" --conditions --branch-probabilities "$notes_file")
     file_summary=$(printf '%s\n' "$gcov_output" | awk -v root="$repo_dir/" '
         /^File / {
             current = index($0, root) > 0 && $0 !~ /_test[.]/
