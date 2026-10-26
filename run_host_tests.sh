@@ -9,12 +9,23 @@ else
     test_python=python3
 fi
 
-"$test_python" -m pytest -m "unit or integration or system"
+coverage_root="$repo_dir/build/coverage"
+mkdir -p "$coverage_root"
+python_results="$coverage_root/python-results.xml"
+python_log="$coverage_root/python-tests.log"
+if "$test_python" -m pytest -m "unit or integration or system" \
+    --junitxml="$python_results" >"$python_log" 2>&1; then
+    cat "$python_log"
+else
+    cat "$python_log"
+    exit 1
+fi
 
 coverage_build="$repo_dir/build/unit-mcdc-coverage"
 cmake -S "$repo_dir/tests/unit" -B "$coverage_build" -DENABLE_MCDC_COVERAGE=ON
 cmake --build "$coverage_build"
-ctest --test-dir "$coverage_build" --output-on-failure
+ctest --test-dir "$coverage_build" --output-on-failure \
+    --output-log "$coverage_root/native-tests.log"
 
 if ! command -v gcov >/dev/null 2>&1; then
     printf 'ERROR: gcov is required to report native MC/DC coverage.\n' >&2
@@ -23,6 +34,8 @@ fi
 
 coverage_report="$coverage_build/gcov-report"
 mkdir -p "$coverage_report"
+coverage_summary="$coverage_report/summary.txt"
+: > "$coverage_summary"
 printf '\nNative per-file coverage (line, branch, and masking MC/DC):\n'
 find "$coverage_build/CMakeFiles" -type f -name '*.gcno' -print | sort | while IFS= read -r notes_file; do
     notes_name=${notes_file##*/}
@@ -30,7 +43,7 @@ find "$coverage_build/CMakeFiles" -type f -name '*.gcno' -print | sort | while I
         *_test.*.gcno) continue ;;
     esac
     gcov_output=$(cd "$coverage_report" && gcov --conditions --branch-probabilities "$notes_file")
-    printf '%s\n' "$gcov_output" | awk -v root="$repo_dir/" '
+    file_summary=$(printf '%s\n' "$gcov_output" | awk -v root="$repo_dir/" '
         /^File / {
             current = index($0, root) > 0 && $0 !~ /_test[.]/
             if (current) print
@@ -40,5 +53,16 @@ find "$coverage_build/CMakeFiles" -type f -name '*.gcno' -print | sort | while I
         /^(Lines executed:|Branches executed:|Taken at least once:|Condition outcomes covered:)/ {
             if (current) print
         }
-    '
+    ')
+    if [ -n "$file_summary" ]; then
+        printf '%s\n' "$file_summary"
+        printf '%s\n' "$file_summary" >> "$coverage_summary"
+    fi
 done
+
+"$test_python" "$repo_dir/tools/generate_coverage_report.py" \
+    --python-results "$python_results" \
+    --native-results "$coverage_root/native-tests.log" \
+    --coverage-summary "$coverage_summary" \
+    --output "$coverage_root/index.html"
+printf '\nGraphical coverage report: %s\n' "$coverage_root/index.html"
