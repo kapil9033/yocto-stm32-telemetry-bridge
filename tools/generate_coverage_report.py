@@ -20,7 +20,8 @@ def read_python_results(path):
     root = ET.parse(path).getroot()
     cases = []
     for case in root.iter("testcase"):
-        skipped = case.find("skipped") is not None
+        skipped_node = case.find("skipped")
+        skipped = skipped_node is not None
         failed = case.find("failure") is not None or case.find("error") is not None
         status = "Skipped" if skipped else "Failed" if failed else "Passed"
         cases.append({
@@ -28,6 +29,10 @@ def read_python_results(path):
             "name": case.get("name", "unnamed test"),
             "status": status,
             "time": float(case.get("time", "0") or 0),
+            "detail": (
+                (skipped_node.get("message") or skipped_node.text or "").strip()
+                if skipped_node is not None else ""
+            ),
         })
     return cases
 
@@ -114,15 +119,30 @@ def render(args):
             "</tr>"
         )
 
-    python_rows = []
+    python_groups = {"Unit": [], "Integration": [], "System": []}
     for case in python_cases:
-        python_rows.append(
+        level = next(
+            (name for name in ("Integration", "System") if f".{name.lower()}." in f".{case['suite']}."),
+            "Unit",
+        )
+        python_groups[level].append(case)
+
+    def python_table_rows(cases):
+        rows = []
+        for case in cases:
+            detail = escape(case["detail"])
+            rows.append(
             "<tr>"
             f"<td><code>{escape(case['suite'])}::{escape(case['name'])}</code></td>"
             f"<td>{status_badge(case['status'])}</td>"
             f"<td>{case['time']:.3f}s</td>"
+            f"<td>{detail}</td>"
             "</tr>"
-        )
+            )
+        return "".join(rows)
+
+    def group_count(level, status):
+        return sum(case["status"] == status for case in python_groups[level])
 
     summary_link = "../unit-mcdc-coverage/gcov-report/summary.txt"
     html = f"""<!doctype html>
@@ -161,11 +181,11 @@ def render(args):
   <h1>Host Test Coverage</h1>
   <p>Coverage and test outcomes collected by <code>run_host_tests.sh</code>.</p>
   <section class="cards" aria-label="Test totals">
-    <div class="card"><strong>{len(python_cases)}</strong><span>Python tests</span></div>
-    <div class="card"><strong>{python_counts['Passed']}</strong><span>Python passed</span></div>
-    <div class="card"><strong>{python_counts['Skipped']}</strong><span>Python skipped</span></div>
-    <div class="card"><strong>{len(native_cases)}</strong><span>Native tests</span></div>
-    <div class="card"><strong>{native_counts['Passed']}</strong><span>Native passed</span></div>
+    <div class="card"><strong>{len(python_cases)}</strong><span>pytest cases (Python)</span></div>
+    <div class="card"><strong>{group_count('Unit', 'Passed')}/{len(python_groups['Unit'])}</strong><span>Unit tests passed</span></div>
+    <div class="card"><strong>{group_count('Integration', 'Passed')}/{len(python_groups['Integration'])}</strong><span>Integration tests passed</span></div>
+    <div class="card"><strong>{group_count('System', 'Passed')}/{len(python_groups['System'])}</strong><span>System tests passed</span></div>
+    <div class="card"><strong>{native_counts['Passed']}/{len(native_cases)}</strong><span>Native tests passed</span></div>
   </section>
 
   <h2>Native coverage by test step</h2>
@@ -175,10 +195,22 @@ def render(args):
   </table></div>
   <p class="note">MC/DC is masking modified condition/decision coverage. Coverage is collected for native C/C++ production files. Python and shell test cases are listed below; their source coverage is not measured by this GCC report.</p>
 
-  <h2>Python test steps</h2>
+  <h2>Unit tests (pytest)</h2>
   <div class="table-wrap"><table>
-    <thead><tr><th>Test case</th><th>Result</th><th>Duration</th></tr></thead>
-    <tbody>{''.join(python_rows)}</tbody>
+    <thead><tr><th>Test case</th><th>Result</th><th>Duration</th><th>Details</th></tr></thead>
+    <tbody>{python_table_rows(python_groups['Unit'])}</tbody>
+  </table></div>
+
+  <h2>Integration tests (pytest)</h2>
+  <div class="table-wrap"><table>
+    <thead><tr><th>Test case</th><th>Result</th><th>Duration</th><th>Details</th></tr></thead>
+    <tbody>{python_table_rows(python_groups['Integration'])}</tbody>
+  </table></div>
+
+  <h2>System tests (pytest)</h2>
+  <div class="table-wrap"><table>
+    <thead><tr><th>Test case</th><th>Result</th><th>Duration</th><th>Details</th></tr></thead>
+    <tbody>{python_table_rows(python_groups['System'])}</tbody>
   </table></div>
 
   <footer>Raw native summary: <a href="{summary_link}">summary.txt</a></footer>
